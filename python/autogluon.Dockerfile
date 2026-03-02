@@ -1,12 +1,11 @@
 ARG PYTHON_VERSION=3.12
-ARG BASE_IMAGE=python:${PYTHON_VERSION}-slim
+ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312:latest
 ARG VENV_PATH=/prod_venv
 
 FROM ${BASE_IMAGE} AS builder
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends python3-dev curl build-essential && apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+RUN dnf update && dnf install -y --no-install-recommends python3-dev curl build-essential && dnf clean 
 
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
@@ -39,8 +38,6 @@ RUN cd autogluonserver && uv sync --active --no-cache
 # Generate third-party licenses
 COPY pyproject.toml pyproject.toml
 COPY third_party/pip-licenses.py pip-licenses.py
-# TODO: Remove this when upgrading to python 3.11+
-RUN pip install --no-cache-dir tomli
 RUN mkdir -p third_party/library && python3 pip-licenses.py
 
 
@@ -48,8 +45,8 @@ RUN mkdir -p third_party/library && python3 pip-licenses.py
 FROM ${BASE_IMAGE} AS prod
 
 # Runtime deps for AutoGluon backends (LightGBM, XGBoost, etc.) that use OpenMP
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN dnf update && dnf install -y --no-install-recommends libgomp1 && \
+    dnf clean
 
 COPY third_party third_party
 
