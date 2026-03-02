@@ -7,8 +7,7 @@ USER root
 WORKDIR /
 
 # Install uv
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
-    ln -s /root/.local/bin/uv /usr/local/bin/uv
+RUN pip install --no-cache-dir uv
 
 # Create virtual environment
 ARG VENV_PATH
@@ -33,7 +32,6 @@ RUN cd storage && uv pip install . --no-cache --index https://pypi.org/simple
 # ========== Install autogluonserver dependencies ==========
 COPY autogluonserver autogluonserver
 RUN cd autogluonserver && uv sync --active --no-cache --index https://pypi.org/simple
-RUN python -c "print('Importing lighgbm');import lightgbm;print(lightgbm.__version__)"
 
 # Generate third-party licenses
 COPY pyproject.toml pyproject.toml
@@ -62,7 +60,6 @@ COPY --from=builder --chown=kserve:kserve /third_party third_party
 COPY --from=builder --chown=kserve:kserve $VENV_PATH $VENV_PATH
 COPY --from=builder --chown=kserve:kserve /kserve kserve
 COPY --from=builder --chown=kserve:kserve /storage storage
-# Copy to /autogluonserver so PYTHONPATH=/autogluonserver finds the package
 COPY --from=builder --chown=kserve:kserve /autogluonserver /autogluonserver
 
 USER 1000
