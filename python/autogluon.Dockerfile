@@ -4,6 +4,7 @@ ARG VENV_PATH=/prod_venv
 
 FROM ${BASE_IMAGE} AS builder
 USER root
+WORKDIR /
 
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
@@ -32,7 +33,7 @@ RUN cd storage && uv pip install . --no-cache --index https://pypi.org/simple
 # ========== Install autogluonserver dependencies ==========
 COPY autogluonserver autogluonserver
 RUN cd autogluonserver && uv sync --active --no-cache --index https://pypi.org/simple
-RUN python -c "import lightgbm"
+RUN python -c "print('Importing lighgbm');import lightgbm;print(lightgbm.__version__)"
 
 # Generate third-party licenses
 COPY pyproject.toml pyproject.toml
@@ -56,7 +57,7 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 RUN useradd kserve -m -u 1000 -d /home/kserve
 
-COPY --from=builder --chown=kserve:kserve third_party third_party
+COPY --from=builder --chown=kserve:kserve /third_party third_party
 COPY --from=builder --chown=kserve:kserve $VIRTUAL_ENV $VIRTUAL_ENV
 COPY --from=builder kserve kserve
 COPY --from=builder storage storage
