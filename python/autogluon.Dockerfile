@@ -1,12 +1,12 @@
 ARG PYTHON_VERSION=3.12
-ARG BASE_IMAGE=quay.io/aipcc/base-images/cpu:3.3
+ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312:latest
 ARG VENV_PATH=/prod_venv
 
 FROM ${BASE_IMAGE} AS builder
 USER root
 
-# Install system dependencies
-RUN dnf update && dnf install -y --no-install-recommends python3-dev curl build-essential && dnf clean 
+# Install system dependencies (UBI has dnf repos; use RHEL package names)
+RUN dnf update -y && dnf install -y --no-install-recommends python3-devel curl gcc gcc-c++ make && dnf clean all 
 
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
@@ -35,6 +35,7 @@ RUN cd storage && uv pip install . --no-cache
 # ========== Install autogluonserver dependencies ==========
 COPY autogluonserver autogluonserver
 RUN cd autogluonserver && uv sync --active --no-cache
+RUN python -c "import lightgbm"
 
 # Generate third-party licenses
 COPY pyproject.toml pyproject.toml
@@ -46,9 +47,8 @@ RUN mkdir -p third_party/library && python3 pip-licenses.py
 FROM ${BASE_IMAGE} AS prod
 USER root
 
-# Runtime deps for AutoGluon backends (LightGBM, XGBoost, etc.) that use OpenMP
-RUN dnf update && dnf install -y --no-install-recommends libgomp1 && \
-    dnf clean
+# Note: BASE_IMAGE (e.g. aipcc/cpu) often has no dnf repos. Ensure it provides libgomp
+# for OpenMP (LightGBM, XGBoost); otherwise use a prod image that includes it.
 
 COPY third_party third_party
 
