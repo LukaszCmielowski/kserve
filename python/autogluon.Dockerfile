@@ -5,9 +5,6 @@ ARG VENV_PATH=/prod_venv
 FROM ${BASE_IMAGE} AS builder
 USER root
 
-# Install system dependencies (UBI has dnf repos; use RHEL package names)
-RUN dnf update -y && dnf install -y python3-devel curl gcc gcc-c++ make && dnf clean all 
-
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
     ln -s /root/.local/bin/uv /usr/local/bin/uv
