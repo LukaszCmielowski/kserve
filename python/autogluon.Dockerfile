@@ -3,6 +3,7 @@ ARG BASE_IMAGE=quay.io/aipcc/base-images/cpu:3.3
 ARG VENV_PATH=/prod_venv
 
 FROM ${BASE_IMAGE} AS builder
+USER root
 
 # Install system dependencies
 RUN dnf update && dnf install -y --no-install-recommends python3-dev curl build-essential && dnf clean 
@@ -43,6 +44,7 @@ RUN mkdir -p third_party/library && python3 pip-licenses.py
 
 # =================== Final stage ===================
 FROM ${BASE_IMAGE} AS prod
+USER root
 
 # Runtime deps for AutoGluon backends (LightGBM, XGBoost, etc.) that use OpenMP
 RUN dnf update && dnf install -y --no-install-recommends libgomp1 && \
