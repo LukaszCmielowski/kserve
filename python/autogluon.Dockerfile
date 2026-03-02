@@ -58,10 +58,10 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 RUN useradd kserve -m -u 1000 -d /home/kserve
 
 COPY --from=builder --chown=kserve:kserve /third_party third_party
-COPY --from=builder --chown=kserve:kserve $VIRTUAL_ENV $VIRTUAL_ENV
-COPY --from=builder kserve kserve
-COPY --from=builder storage storage
-COPY --from=builder autogluonserver autogluonserver
+COPY --from=builder --chown=kserve:kserve /$VIRTUAL_ENV $VIRTUAL_ENV
+COPY --from=builder /kserve kserve
+COPY --from=builder /storage storage
+COPY --from=builder /autogluonserver autogluonserver
 
 USER 1000
 ENV PYTHONPATH=/autogluonserver
