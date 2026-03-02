@@ -44,6 +44,7 @@ RUN mkdir -p third_party/library && python3 pip-licenses.py
 # =================== Final stage ===================
 FROM ${BASE_IMAGE} AS prod
 USER root
+WORKDIR /
 
 # Note: BASE_IMAGE (e.g. aipcc/cpu) often has no dnf repos. Ensure it provides libgomp
 # for OpenMP (LightGBM, XGBoost); otherwise use a prod image that includes it.
@@ -58,10 +59,11 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 RUN useradd kserve -m -u 1000 -d /home/kserve
 
 COPY --from=builder --chown=kserve:kserve /third_party third_party
-COPY --from=builder --chown=kserve:kserve /$VIRTUAL_ENV $VIRTUAL_ENV
-COPY --from=builder /kserve kserve
-COPY --from=builder /storage storage
-COPY --from=builder /autogluonserver autogluonserver
+COPY --from=builder --chown=kserve:kserve $VENV_PATH $VENV_PATH
+COPY --from=builder --chown=kserve:kserve /kserve kserve
+COPY --from=builder --chown=kserve:kserve /storage storage
+# Copy to /autogluonserver so PYTHONPATH=/autogluonserver finds the package
+COPY --from=builder --chown=kserve:kserve /autogluonserver /autogluonserver
 
 USER 1000
 ENV PYTHONPATH=/autogluonserver
