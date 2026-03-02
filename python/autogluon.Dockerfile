@@ -65,4 +65,3 @@ COPY --from=builder /autogluonserver autogluonserver
 
 USER 1000
 ENV PYTHONPATH=/autogluonserver
-ENTRYPOINT ["python", "-m", "autogluonserver"]
