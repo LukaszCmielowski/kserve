@@ -20,21 +20,21 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # ========== Install kserve dependencies ==========
 COPY kserve/pyproject.toml kserve/uv.lock kserve/
-RUN cd kserve && uv sync --active --no-cache
+RUN cd kserve && uv sync --active --no-cache --index https://pypi.org/simple
 
 COPY kserve kserve
-RUN cd kserve && uv sync --active --no-cache
+RUN cd kserve && uv sync --active --no-cache --index https://pypi.org/simple
 
 # ========== Install kserve storage dependencies ==========
 COPY storage/pyproject.toml storage/uv.lock storage/
-RUN cd storage && uv sync --active --no-cache
+RUN cd storage && uv sync --active --no-cache --index https://pypi.org/simple
 
 COPY storage storage
-RUN cd storage && uv pip install . --no-cache
+RUN cd storage && uv pip install . --no-cache --index https://pypi.org/simple
 
 # ========== Install autogluonserver dependencies ==========
 COPY autogluonserver autogluonserver
-RUN cd autogluonserver && uv sync --active --no-cache
+RUN cd autogluonserver && uv sync --active --no-cache --index https://pypi.org/simple
 RUN python -c "import lightgbm"
 
 # Generate third-party licenses
