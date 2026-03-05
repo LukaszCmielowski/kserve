@@ -161,13 +161,16 @@ def _determine_prediction_datatype(predictor) -> str:
     if not labels:
         return "BYTES"
 
+    if all(
+        isinstance(label, (int, np.integer)) and not isinstance(label, bool)
+        for label in labels
+    ):
+        return "INT64"
+
     numeric_labels = pd.to_numeric(pd.Series(labels), errors="coerce")
     if numeric_labels.isna().any():
         return "BYTES"
 
-    values = numeric_labels.to_numpy(dtype=np.float64)
-    if np.all(np.isfinite(values)) and np.all(np.equal(values, np.floor(values))):
-        return "INT64"
     return "FP64"
 
 
