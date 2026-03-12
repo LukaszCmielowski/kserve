@@ -31,6 +31,7 @@ import (
 	lwsapi "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	"github.com/kserve/kserve/pkg/apis/serving/v1alpha2"
+	"github.com/kserve/kserve/pkg/constants"
 	"github.com/kserve/kserve/pkg/utils"
 )
 
@@ -63,7 +64,7 @@ func (r *LLMISVCReconciler) reconcileWorkload(ctx context.Context, llmSvc *v1alp
 	}
 
 	// Set up TLS certificates for secure communication
-	if err := r.reconcileSelfSignedCertsSecret(ctx, llmSvc); err != nil {
+	if err := r.reconcileSelfSignedCertsSecret(ctx, llmSvc, config.SchedulerConfig); err != nil {
 		llmSvc.MarkMainWorkloadNotReady("ReconcileCertsError", err.Error())
 		return fmt.Errorf("failed to reconcile self-signed certificates secret: %w", err)
 	}
@@ -98,9 +99,9 @@ func (r *LLMISVCReconciler) reconcileWorkloadService(ctx context.Context, llmSvc
 			Name:      kmeta.ChildName(llmSvc.GetName(), "-kserve-workload-svc"),
 			Namespace: llmSvc.GetNamespace(),
 			Labels: map[string]string{
-				"app.kubernetes.io/component": "llminferenceservice-workload",
-				"app.kubernetes.io/name":      llmSvc.GetName(),
-				"app.kubernetes.io/part-of":   "llminferenceservice",
+				constants.KubernetesComponentLabelKey: constants.LLMComponentWorkload,
+				constants.KubernetesAppNameLabelKey:   llmSvc.GetName(),
+				constants.KubernetesPartOfLabelKey:    constants.LLMInferenceServicePartOfValue,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(llmSvc, v1alpha2.LLMInferenceServiceGVK),
@@ -141,9 +142,9 @@ func (r *LLMISVCReconciler) reconcileWorkloadService(ctx context.Context, llmSvc
 
 func GetWorkloadLabelSelector(meta metav1.ObjectMeta, _ *v1alpha2.LLMInferenceServiceSpec) map[string]string {
 	s := map[string]string{
-		"app.kubernetes.io/part-of": "llminferenceservice",
-		"app.kubernetes.io/name":    meta.GetName(),
-		"kserve.io/component":       "workload",
+		constants.KubernetesPartOfLabelKey:  constants.LLMInferenceServicePartOfValue,
+		constants.KubernetesAppNameLabelKey: meta.GetName(),
+		constants.KServeComponentLabelKey:   constants.KServeComponentWorkload,
 	}
 
 	// TODO https://github.com/llm-d/llm-d-inference-scheduler/issues/220 and DP template

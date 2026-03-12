@@ -274,8 +274,8 @@ func AddDefaultHuggingFaceEnvVars(container *corev1.Container) {
 
 func GetStorageResources(storageURIs []string, storagePaths []string) ([]corev1.VolumeMount, []corev1.Volume, []string, error) {
 	initContainerArgs := make([]string, 0, len(storageURIs)*2)
-	var volumeMounts []corev1.VolumeMount
-	var volumes []corev1.Volume
+	volumeMounts := make([]corev1.VolumeMount, 0, 1)
+	volumes := make([]corev1.Volume, 0, 1)
 	mountPaths := make([]string, 0, len(storageURIs))
 
 	for i := range storageURIs {
@@ -468,9 +468,10 @@ func ConfigureModelcarToContainer(modelUri string, podSpec *corev1.PodSpec, targ
 	// of Kubernetes where sharing the filesystem via the process namespace only works
 	// when both containers are running as root
 	if storageConfig.UidModelcar != nil {
-		targetContainer.SecurityContext = &corev1.SecurityContext{
-			RunAsUser: storageConfig.UidModelcar,
+		if targetContainer.SecurityContext == nil {
+			targetContainer.SecurityContext = &corev1.SecurityContext{}
 		}
+		targetContainer.SecurityContext.RunAsUser = storageConfig.UidModelcar
 	}
 
 	// Create the modelcar that is used as a sidecar in Pod and add it to the end

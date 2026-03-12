@@ -23,9 +23,9 @@ spec:
             # BackendTLSPolicy is not implemented yet so disable SSL for now
             # - --enable-ssl-refresh
             # - --ssl-certfile
-            # - /etc/ssl/certs/tls.crt
+            # - /var/run/kserve/tls/tls.crt
             # - --ssl-keyfile
-            # - /etc/ssl/certs/tls.key
+            # - /var/run/kserve/tls/tls.key
 
           env:
             - name: HOME
@@ -50,7 +50,6 @@ spec:
               path: /health
               port: 8000
               scheme: HTTP
-            initialDelaySeconds: 120
             periodSeconds: 10
             timeoutSeconds: 10
             failureThreshold: 3
@@ -59,10 +58,16 @@ spec:
               path: /health
               port: 8000
               scheme: HTTP
-            initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 60
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 60
+            periodSeconds: 10
           volumeMounts:
             - mountPath: /home
               name: home
@@ -70,7 +75,7 @@ spec:
               name: dshm
             - mountPath: /models
               name: model-cache
-            - mountPath: /etc/ssl/certs
+            - mountPath: /var/run/kserve/tls
               name: tls-certs
               readOnly: true
       terminationGracePeriodSeconds: 30

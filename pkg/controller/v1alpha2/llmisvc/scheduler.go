@@ -23,33 +23,36 @@ import (
 	"slices"
 	"sort"
 
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/sets"
-
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/util/retry"
 	"knative.dev/pkg/kmeta"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	igwapi "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 	igwapiv1alpha2 "sigs.k8s.io/gateway-api-inference-extension/apix/v1alpha2"
 
 	"github.com/kserve/kserve/pkg/apis/serving/v1alpha2"
+	"github.com/kserve/kserve/pkg/constants"
 	"github.com/kserve/kserve/pkg/utils"
 )
 
 // reconcileScheduler manages the scheduler component and its related resources
 // The scheduler handles load balancing for inference pods
-func (r *LLMISVCReconciler) reconcileScheduler(ctx context.Context, llmSvc *v1alpha2.LLMInferenceService) error {
+func (r *LLMISVCReconciler) reconcileScheduler(ctx context.Context, llmSvc *v1alpha2.LLMInferenceService, schedulerConfig *SchedulerConfig) error {
 	log.FromContext(ctx).Info("Reconciling Scheduler")
 
 	if err := r.reconcileSchedulerServiceAccount(ctx, llmSvc); err != nil {
 		return err
 	}
-	if err := r.reconcileSchedulerDeployment(ctx, llmSvc); err != nil {
+	if err := r.reconcileSchedulerDeployment(ctx, llmSvc, schedulerConfig); err != nil {
 		return err
 	}
 	if err := r.reconcileSchedulerService(ctx, llmSvc); err != nil {
@@ -143,8 +146,11 @@ func (r *LLMISVCReconciler) reconcileSchedulerServiceAccount(ctx context.Context
 	return r.reconcileSchedulerRoleBinding(ctx, llmSvc, serviceAccount)
 }
 
-func (r *LLMISVCReconciler) reconcileSchedulerDeployment(ctx context.Context, llmSvc *v1alpha2.LLMInferenceService) error {
-	scheduler := r.expectedSchedulerDeployment(ctx, llmSvc)
+func (r *LLMISVCReconciler) reconcileSchedulerDeployment(ctx context.Context, llmSvc *v1alpha2.LLMInferenceService, schedulerConfig *SchedulerConfig) error {
+	scheduler, err := r.expectedSchedulerDeployment(ctx, llmSvc, schedulerConfig)
+	if err != nil {
+		return fmt.Errorf("failed to build expected scheduler deployment: %w", err)
+	}
 	if isStopped := utils.GetForceStopRuntime(llmSvc); isStopped || llmSvc.Spec.Router == nil || llmSvc.Spec.Router.Scheduler == nil || llmSvc.Spec.Router.Scheduler.Template == nil || llmSvc.Spec.Router.Scheduler.Pool.HasRef() {
 		if isStopped {
 			llmSvc.MarkSchedulerWorkloadNotReady("Stopped", "Service is stopped")
@@ -156,11 +162,10 @@ func (r *LLMISVCReconciler) reconcileSchedulerDeployment(ctx context.Context, ll
 	if err := Reconcile(ctx, r, llmSvc, &appsv1.Deployment{}, scheduler, semanticDeploymentIsEqual, PreserveDeploymentReplicas()); err != nil {
 		return fmt.Errorf("failed to reconcile scheduler deployment %s/%s: %w", scheduler.GetNamespace(), scheduler.GetName(), err)
 	}
-	return r.propagateDeploymentStatus(ctx, scheduler, llmSvc.MarkSchedulerWorkloadReady, llmSvc.MarkSchedulerWorkloadNotReady)
+	return r.propagateSchedulerDeploymentStatus(ctx, scheduler, llmSvc.MarkSchedulerWorkloadReady, llmSvc.MarkSchedulerWorkloadNotReady)
 }
 
 func (r *LLMISVCReconciler) reconcileSchedulerInferencePool(ctx context.Context, llmSvc *v1alpha2.LLMInferenceService) error {
-	logger := log.FromContext(ctx)
 	shouldDelete := utils.GetForceStopRuntime(llmSvc) || llmSvc.Spec.Router == nil || llmSvc.Spec.Router.Scheduler == nil || llmSvc.Spec.Router.Scheduler.Template == nil || llmSvc.Spec.Router.Scheduler.Pool.HasRef()
 
 	if err := r.reconcileV1InferencePool(ctx, llmSvc, shouldDelete); err != nil {
@@ -171,19 +176,11 @@ func (r *LLMISVCReconciler) reconcileSchedulerInferencePool(ctx context.Context,
 		return err
 	}
 
-	logger.V(2).Info("InferencePool reconciliation complete",
-		"v1Available", r.InferencePoolV1Available,
-		"v1alpha2Available", r.InferencePoolV1Alpha2Available)
-
 	return nil
 }
 
 // reconcileV1InferencePool reconciles the v1 InferencePool if the CRD is available.
 func (r *LLMISVCReconciler) reconcileV1InferencePool(ctx context.Context, llmSvc *v1alpha2.LLMInferenceService, shouldDelete bool) error {
-	if !r.InferencePoolV1Available {
-		return nil
-	}
-
 	expected := r.expectedSchedulerInferencePool(ctx, llmSvc)
 	if shouldDelete {
 		return Delete(ctx, r, llmSvc, expected)
@@ -193,10 +190,6 @@ func (r *LLMISVCReconciler) reconcileV1InferencePool(ctx context.Context, llmSvc
 
 // reconcileV1Alpha2InferencePool reconciles the v1alpha2 InferencePool if the CRD is available.
 func (r *LLMISVCReconciler) reconcileV1Alpha2InferencePool(ctx context.Context, llmSvc *v1alpha2.LLMInferenceService, shouldDelete bool) error {
-	if !r.InferencePoolV1Alpha2Available {
-		return nil
-	}
-
 	expected := r.expectedSchedulerInferencePoolV1Alpha2(ctx, llmSvc)
 	if shouldDelete {
 		return Delete(ctx, r, llmSvc, expected)
@@ -252,7 +245,7 @@ func (r *LLMISVCReconciler) expectedSchedulerService(ctx context.Context, llmSvc
 			logger.Info("some ports are not matching", "desired", desiredPorts, "actual", maps.Keys(actualPorts))
 		}
 
-		var servicePorts []corev1.ServicePort
+		servicePorts := make([]corev1.ServicePort, 0, len(actualPorts))
 		for name, port := range actualPorts {
 			servicePorts = append(servicePorts, corev1.ServicePort{
 				Name:       name,
@@ -330,7 +323,7 @@ func (r *LLMISVCReconciler) expectedSchedulerInferencePoolV1Alpha2(ctx context.C
 	return ip
 }
 
-func (r *LLMISVCReconciler) expectedSchedulerDeployment(ctx context.Context, llmSvc *v1alpha2.LLMInferenceService) *appsv1.Deployment {
+func (r *LLMISVCReconciler) expectedSchedulerDeployment(ctx context.Context, llmSvc *v1alpha2.LLMInferenceService, schedulerConfig *SchedulerConfig) (*appsv1.Deployment, error) {
 	labels := SchedulerLabels(llmSvc)
 	d := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -342,6 +335,15 @@ func (r *LLMISVCReconciler) expectedSchedulerDeployment(ctx context.Context, llm
 			Labels: labels,
 		},
 		Spec: appsv1.DeploymentSpec{
+			Strategy: appsv1.DeploymentStrategy{
+				// The current recommended EPP deployment pattern is to have a single active replica. This ensures
+				// optimal performance of the stateful operations such prefix cache aware scorer.
+				// The `Recreate` strategy ensures the old replica is killed immediately, and allow the new replica(s) to
+				// quickly take over. This is particularly important in the high availability set up with leader
+				// election, as the rolling update strategy would prevent the old leader being killed because
+				// otherwise the maxUnavailable would be 100%.
+				Type: appsv1.RecreateDeploymentStrategyType,
+			},
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
@@ -353,31 +355,66 @@ func (r *LLMISVCReconciler) expectedSchedulerDeployment(ctx context.Context, llm
 		},
 	}
 
+	mainIdx := -1
 	if llmSvc.Spec.Router != nil && llmSvc.Spec.Router.Scheduler != nil && llmSvc.Spec.Router.Scheduler.Template != nil {
+		curr := &appsv1.Deployment{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(d), curr); err != nil && !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to get current scheduler deployment %s/%s: %w", d.GetNamespace(), d.GetName(), err)
+		}
+
+		d.Spec.Replicas = llmSvc.Spec.Router.Scheduler.Replicas
 		d.Spec.Template.Spec = *llmSvc.Spec.Router.Scheduler.Template.DeepCopy()
-		for i := range d.Spec.Template.Spec.Containers {
-			if d.Spec.Template.Spec.Containers[i].Name != "main" {
-				continue
+
+		mainIdx = slices.IndexFunc(d.Spec.Template.Spec.Containers, func(c corev1.Container) bool {
+			return c.Name == "main"
+		})
+		if mainIdx < 0 {
+			log.FromContext(ctx).Info("Scheduler template does not have a container named \"main\", skipping arg injection")
+		}
+
+		if mainIdx >= 0 {
+			mainContainer := &d.Spec.Template.Spec.Containers[mainIdx]
+
+			if d.Spec.Replicas != nil && *d.Spec.Replicas > 1 &&
+				!slices.Contains(mainContainer.Args, "--ha-enable-leader-election") &&
+				!slices.Contains(mainContainer.Args, "-ha-enable-leader-election") {
+				mainContainer.Args = append(mainContainer.Args,
+					"--ha-enable-leader-election",
+				)
 			}
 
-			if slices.Contains(d.Spec.Template.Spec.Containers[i].Args, "--config-text") ||
-				slices.Contains(d.Spec.Template.Spec.Containers[i].Args, "-config-text") ||
-				slices.Contains(d.Spec.Template.Spec.Containers[i].Args, "--config-file") ||
-				slices.Contains(d.Spec.Template.Spec.Containers[i].Args, "-config-file") {
-				// When the configuration is overridden, don't add/override it.
-				break
-			}
-
-			d.Spec.Template.Spec.Containers[i].Args = append(d.Spec.Template.Spec.Containers[i].Args,
-				"--config-text",
-				schedulerConfigText(llmSvc),
+			mainContainer.Args = append(mainContainer.Args,
+				preserveSchedulerConfig(llmSvc, curr)...,
 			)
+		}
+	}
+
+	r.propagateSchedulerMetadata(llmSvc, d)
+
+	// Set a hash of the current certificate data on the pod template so that
+	// when certificates are renewed the pod template changes and the scheduler
+	// is restarted to pick up the new certificate.
+	// Skip if the main container supports automatic cert reload.
+	if mainIdx >= 0 && !slices.Contains(d.Spec.Template.Spec.Containers[mainIdx].Args, "--enable-cert-reload") {
+		if h := r.getSelfSignedCertHash(ctx, llmSvc); h != "" {
+			if d.Spec.Template.Annotations == nil {
+				d.Spec.Template.Annotations = map[string]string{}
+			}
+			d.Spec.Template.Annotations[schedulerConfig.RestartAnnotation] = h
 		}
 	}
 
 	log.FromContext(ctx).V(2).Info("Expected router scheduler deployment", "deployment", d)
 
-	return d
+	return d, nil
+}
+
+func (r *LLMISVCReconciler) propagateSchedulerMetadata(llmSvc *v1alpha2.LLMInferenceService, expected *appsv1.Deployment) {
+	if llmSvc.Spec.Router == nil || llmSvc.Spec.Router.Scheduler == nil {
+		return
+	}
+	utils.PropagateMap(llmSvc.Spec.Router.Scheduler.Labels, &expected.Spec.Template.Labels)
+	utils.PropagateMap(llmSvc.Spec.Router.Scheduler.Annotations, &expected.Spec.Template.Annotations)
 }
 
 func schedulerConfigText(llmSvc *v1alpha2.LLMInferenceService) string {
@@ -444,6 +481,59 @@ schedulingProfiles:
 	}
 }
 
+// schedulerConfigFlags lists both kebab-case and camelCase variants because
+// Go's flag package accepts either form.
+var schedulerConfigFlags = map[string]struct{}{
+	"--config-text": {}, "-config-text": {}, "--configText": {}, "-configText": {},
+	"--config-file": {}, "-config-file": {}, "--configFile": {}, "-configFile": {},
+}
+
+// preserveSchedulerConfig returns the config args for the scheduler container.
+//
+// Priority:
+//  1. Explicit inline config (including resolved ConfigMap refs) - always wins.
+//  2. Config flag already present in the template args - kept as-is (return nil).
+//  3. Config flag found in the current deployment - preserved across upgrades.
+//  4. No config anywhere - a fresh default is generated.
+func preserveSchedulerConfig(llmSvc *v1alpha2.LLMInferenceService, curr *appsv1.Deployment) []string {
+	if llmSvc.Spec.Router != nil &&
+		llmSvc.Spec.Router.Scheduler != nil &&
+		llmSvc.Spec.Router.Scheduler.Config != nil &&
+		llmSvc.Spec.Router.Scheduler.Config.Inline != nil {
+		return []string{"--config-text", string(llmSvc.Spec.Router.Scheduler.Config.Inline.Raw)}
+	}
+
+	if llmSvc.Spec.Router != nil && llmSvc.Spec.Router.Scheduler != nil && llmSvc.Spec.Router.Scheduler.Template != nil {
+		if configFlagFromContainers(llmSvc.Spec.Router.Scheduler.Template.Containers) != nil {
+			return nil
+		}
+	}
+
+	if pair := configFlagFromContainers(curr.Spec.Template.Spec.Containers); pair != nil {
+		return pair
+	}
+
+	return []string{"--config-text", schedulerConfigText(llmSvc)}
+}
+
+// configFlagFromContainers scans the "main" container for a config flag and
+// returns {flag, value} if found, nil otherwise.
+func configFlagFromContainers(containers []corev1.Container) []string {
+	for i := range containers {
+		c := &containers[i]
+		if c.Name != "main" {
+			continue
+		}
+		for j := 0; j+1 < len(c.Args); j++ {
+			if _, ok := schedulerConfigFlags[c.Args[j]]; ok {
+				return []string{c.Args[j], c.Args[j+1]}
+			}
+		}
+		break // done with main
+	}
+	return nil
+}
+
 func (r *LLMISVCReconciler) expectedSchedulerServiceAccount(ctx context.Context, llmSvc *v1alpha2.LLMInferenceService) (*corev1.ServiceAccount, bool, error) {
 	useExistingServiceAccount := false
 	expectedServiceAccountName := kmeta.ChildName(llmSvc.GetName(), "-epp-sa")
@@ -457,7 +547,7 @@ func (r *LLMISVCReconciler) expectedSchedulerServiceAccount(ctx context.Context,
 		useExistingServiceAccount = true
 		log.FromContext(ctx).V(2).Info("Using existing service account for scheduler", "serviceAccountName", existingServiceAccountName)
 		existingServiceAccount := &corev1.ServiceAccount{}
-		err := r.Client.Get(ctx, types.NamespacedName{Name: existingServiceAccountName, Namespace: llmSvc.Namespace}, existingServiceAccount)
+		err := r.Get(ctx, types.NamespacedName{Name: existingServiceAccountName, Namespace: llmSvc.Namespace}, existingServiceAccount)
 		if err != nil {
 			return nil, true, fmt.Errorf("failed to fetch existing scheduler service account %s/%s: %w", llmSvc.Namespace, existingServiceAccountName, err)
 		}
@@ -510,8 +600,9 @@ func (r *LLMISVCReconciler) expectedSchedulerRole(llmSvc *v1alpha2.LLMInferenceS
 		},
 		Rules: []rbacv1.PolicyRule{
 			{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list", "watch"}},
-			{APIGroups: []string{"inference.networking.k8s.io", "inference.networking.x-k8s.io"}, Resources: []string{"inferencepools", "inferenceobjectives"}, Verbs: []string{"get", "list", "watch"}},
+			{APIGroups: []string{"inference.networking.k8s.io", "inference.networking.x-k8s.io"}, Resources: []string{"inferencepools", "inferenceobjectives", "inferencemodels"}, Verbs: []string{"get", "list", "watch"}},
 			{APIGroups: []string{"discovery.k8s.io"}, Resources: []string{"endpointslices"}, Verbs: []string{"get", "list", "watch"}},
+			{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
 		},
 	}
 	return role
@@ -539,6 +630,44 @@ func (r *LLMISVCReconciler) expectedSchedulerRoleBinding(llmSvc *v1alpha2.LLMInf
 		},
 	}
 	return rb
+}
+
+func (r *LLMISVCReconciler) propagateSchedulerDeploymentStatus(ctx context.Context, expected *appsv1.Deployment, ready func(), notReady func(reason, messageFormat string, messageA ...interface{})) error {
+	curr := &appsv1.Deployment{}
+	err := retry.OnError(retry.DefaultRetry, apierrors.IsNotFound, func() error {
+		return r.Get(ctx, client.ObjectKeyFromObject(expected), curr)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get current deployment %s/%s: %w", expected.GetNamespace(), expected.GetName(), err)
+	}
+	// HA mode is an active-passive setup, passive replicas will remain unavailable.
+	if curr.Status.AvailableReplicas > 0 {
+		ready()
+		return nil
+	}
+
+	for _, cond := range curr.Status.Conditions {
+		if cond.Type == appsv1.DeploymentProgressing {
+			if cond.Status == corev1.ConditionFalse && cond.Reason == "ProgressDeadlineExceeded" {
+				notReady(cond.Reason, cond.Message)
+				return nil
+			}
+		}
+	}
+
+	for _, cond := range curr.Status.Conditions {
+		if cond.Type == appsv1.DeploymentAvailable {
+			if cond.Status == corev1.ConditionTrue {
+				ready()
+			} else {
+				notReady(cond.Reason, cond.Message)
+			}
+			return nil
+		}
+	}
+
+	notReady(string(appsv1.DeploymentProgressing), "Deployment rollout in progress")
+	return nil
 }
 
 func semanticServiceIsEqual(expected *corev1.Service, current *corev1.Service) bool {
@@ -588,8 +717,8 @@ func semanticRoleBindingIsEqual(expected *rbacv1.RoleBinding, curr *rbacv1.RoleB
 
 func SchedulerLabels(llmSvc *v1alpha2.LLMInferenceService) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/component": "llminferenceservice-router-scheduler",
-		"app.kubernetes.io/name":      llmSvc.GetName(),
-		"app.kubernetes.io/part-of":   "llminferenceservice",
+		constants.KubernetesComponentLabelKey: constants.LLMComponentRouterScheduler,
+		constants.KubernetesAppNameLabelKey:   llmSvc.GetName(),
+		constants.KubernetesPartOfLabelKey:    constants.LLMInferenceServicePartOfValue,
 	}
 }
