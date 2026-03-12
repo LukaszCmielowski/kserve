@@ -271,6 +271,17 @@ def _build_v2_outputs(
         ], [{"name": "predictions", "datatype": prediction_datatype, "shape": [-1]}]
 
     if isinstance(result, pd.DataFrame):
+        if problem_type == PROBLEM_TYPE_QUANTILE:
+            values = result.apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
+            output = InferOutput(
+                name="predictions", shape=list(values.shape), datatype="FP64"
+            )
+            output.set_data_from_numpy(values, binary_data=False)
+            width = values.shape[1] if values.ndim == 2 else -1
+            return [
+                output
+            ], [{"name": "predictions", "datatype": "FP64", "shape": [-1, width]}]
+
         if _is_predict_proba_enabled():
             labels = list(getattr(predictor, "class_labels", None) or [])
             if len(labels) != len(result.columns):
@@ -389,7 +400,11 @@ class AutoGluonModel(Model):
                     for output_name in output_names
                 ]
         problem_type = (_get_problem_type(predictor) or "").lower()
-        if problem_type in {PROBLEM_TYPE_REGRESSION, PROBLEM_TYPE_QUANTILE}:
+        if problem_type == PROBLEM_TYPE_QUANTILE:
+            levels = list(getattr(predictor, "quantile_levels", None) or [])
+            width = len(levels) if levels else -1
+            return [{"name": "predictions", "datatype": "FP64", "shape": [-1, width]}]
+        if problem_type == PROBLEM_TYPE_REGRESSION:
             return [{"name": "predictions", "datatype": "FP64", "shape": [-1]}]
         return [
             {
