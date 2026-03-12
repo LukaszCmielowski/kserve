@@ -201,8 +201,9 @@ def _series_to_prediction_numpy(result: pd.Series, datatype: str) -> np.ndarray:
 def _infer_request_to_dataframe(payload: InferRequest, predictor) -> pd.DataFrame:
     """Parse v2 InferRequest into DataFrame in a protocol-compliant way.
 
-    Supports only multi-input tabular payloads:
-    - one tensor per feature
+    Supports tabular payloads:
+    - one tensor per feature (all models)
+    - a single tensor request for single-feature models
     - tensor name == feature name
     - shape [batch] or [batch,1]
     """
@@ -213,9 +214,9 @@ def _infer_request_to_dataframe(payload: InferRequest, predictor) -> pd.DataFram
             f"v2 infer request has no inputs. {_v2_tabular_contract_hint(features)}"
         )
 
-    if len(inputs) == 1:
+    if len(inputs) == 1 and len(features) > 1:
         raise InferenceError(
-            "single input tensor is not supported for v2 tabular infer. "
+            "single input tensor is not supported for multi-feature v2 tabular infer. "
             f"{_v2_tabular_contract_hint(features)}"
         )
 
