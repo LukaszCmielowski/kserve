@@ -213,12 +213,6 @@ def _infer_request_to_dataframe(payload: InferRequest, predictor) -> pd.DataFram
             f"v2 infer request has no inputs. {_v2_tabular_contract_hint(features)}"
         )
 
-    if len(inputs) == 1:
-        raise InferenceError(
-            "single input tensor is not supported for tabular infer. "
-            f"{_v2_tabular_contract_hint(features)}"
-        )
-
     columns: Dict[str, List] = {}
     n_rows: Optional[int] = None
     for input_tensor in inputs:
