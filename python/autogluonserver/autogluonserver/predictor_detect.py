@@ -14,11 +14,14 @@
 
 from __future__ import annotations
 
+import re
 from typing import List, Literal, Tuple, Union
 
 from autogluon.tabular import TabularPredictor
 from autogluon.timeseries import TimeSeriesPredictor
 from kserve.errors import InferenceError
+
+
 
 
 def detect_and_load_predictor(
@@ -33,7 +36,7 @@ def detect_and_load_predictor(
     """
     errors: List[str] = []
     try:
-        ts = TimeSeriesPredictor.load(predictor_dir)
+        ts = TimeSeriesPredictor.load(predictor_dir, require_version_match=False)
         if isinstance(ts, TimeSeriesPredictor):
             return "timeseries", ts
         errors.append(
