@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from unittest.mock import MagicMock
 
 from autogluonserver.predictor_factory import (
@@ -47,6 +48,17 @@ def test_load_delegates_to_timeseries(monkeypatch, tmp_path):
     fake.target = "y"
     fake.prediction_length = 1
     fake.known_covariates_names = []
+    (tmp_path / "predictor_metadata.json").write_text(
+        json.dumps(
+            {
+                "target": "y",
+                "id_column": "item_id",
+                "timestamp_column": "timestamp",
+                "prediction_length": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         "autogluonserver.predictor_factory.detect_and_load_predictor",
         lambda _: ("timeseries", fake),

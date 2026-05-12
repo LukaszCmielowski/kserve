@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
@@ -24,9 +25,12 @@ from autogluon.timeseries import TimeSeriesDataFrame, TimeSeriesPredictor
 
 from kserve import Model
 from kserve.errors import InferenceError, ModelMissingError
+from kserve.logging import logger
 from kserve.protocol.infer_type import InferRequest, InferResponse
 from kserve.utils.utils import get_predict_response
 from kserve_storage import Storage
+
+PREDICTOR_METADATA_FILENAME = "predictor_metadata.json"
 
 
 @dataclass
@@ -38,21 +42,119 @@ class TimeSeriesInferenceMetadata:
     known_covariates_names: List[str]
 
 
-def _load_ts_metadata(predictor: TimeSeriesPredictor) -> TimeSeriesInferenceMetadata:
+def _nonempty_metadata_str(value: Any, *, field: str, meta_path: str) -> str:
+    if value is None:
+        raise InferenceError(
+            f"{PREDICTOR_METADATA_FILENAME!r} ({meta_path}) is missing required string field {field!r}."
+        )
+    s = str(value).strip()
+    if not s:
+        raise InferenceError(
+            f"{PREDICTOR_METADATA_FILENAME!r} ({meta_path}) has empty string field {field!r}."
+        )
+    return s
+
+
+def _known_covariates_from_predictor(predictor: TimeSeriesPredictor) -> List[str]:
     known_raw = getattr(predictor, "known_covariates_names", None) or []
     if isinstance(known_raw, (list, tuple)):
-        known_list = [str(x) for x in known_raw]
-    else:
-        known_list = []
+        return [str(x) for x in known_raw]
+    return []
 
-    target = getattr(predictor, "target", None) or os.environ.get(
-        "AUTOGLUON_TS_TARGET", "target"
+
+def _load_ts_metadata(
+    predictor: TimeSeriesPredictor, model_dir: str
+) -> TimeSeriesInferenceMetadata:
+    """
+    Resolve id/timestamp/target (and optional prediction_length) from ``predictor_metadata.json``
+    in the predictor save directory — the same file AutoGluon writes next to ``predictor.pkl``.
+
+    Request payloads must use these exact column names in ``instances`` / ``known_covariates``.
+    Known covariate *names* still come from the loaded predictor (not duplicated in the JSON).
+    """
+    meta_path = os.path.join(model_dir, PREDICTOR_METADATA_FILENAME)
+    if not os.path.isfile(meta_path):
+        preview: List[str] = []
+        if os.path.isdir(model_dir):
+            try:
+                preview = sorted(os.listdir(model_dir))
+            except OSError as exc:
+                preview = [f"<listdir failed: {exc}>"]
+        if len(preview) > 50:
+            preview = preview[:50] + ["..."]
+
+        detail = (
+            f"AutoGluon TimeSeries inference requires {PREDICTOR_METADATA_FILENAME!r} in the "
+            f"model directory (same folder as predictor.pkl; AutoGluon writes it on fit/save). "
+            f"Missing: {meta_path}. model_dir={model_dir!r}. "
+            f"Top-level directory entries (max 50): {preview!r}."
+        )
+        logger.error(detail)
+        raise ModelMissingError(detail)
+    try:
+        with open(meta_path, encoding="utf-8") as fp:
+            raw = json.load(fp)
+    except OSError as e:
+        raise InferenceError(f"Cannot read {meta_path}: {e}") from e
+    except json.JSONDecodeError as e:
+        raise InferenceError(f"Invalid JSON in {meta_path}: {e}") from e
+
+    if not isinstance(raw, dict):
+        raise InferenceError(
+            f"{meta_path} must contain a JSON object at the top level, got {type(raw).__name__}."
+        )
+
+    target = _nonempty_metadata_str(raw.get("target"), field="target", meta_path=meta_path)
+    id_column = _nonempty_metadata_str(
+        raw.get("id_column"), field="id_column", meta_path=meta_path
     )
-    pl = int(getattr(predictor, "prediction_length", 1) or 1)
+    timestamp_column = _nonempty_metadata_str(
+        raw.get("timestamp_column"), field="timestamp_column", meta_path=meta_path
+    )
+
+    if "prediction_length" in raw and raw["prediction_length"] is not None:
+        try:
+            pl = int(raw["prediction_length"])
+        except (TypeError, ValueError) as e:
+            raise InferenceError(
+                f"{meta_path}: prediction_length must be an integer, got {raw['prediction_length']!r}."
+            ) from e
+    else:
+        pl = int(getattr(predictor, "prediction_length", 1) or 1)
+
+    if pl < 1:
+        raise InferenceError(f"{meta_path}: prediction_length must be >= 1, got {pl}.")
+
+    pred_target = getattr(predictor, "target", None)
+    if pred_target is not None and str(pred_target) != target:
+        raise InferenceError(
+            f"{meta_path}: field target={target!r} does not match loaded predictor.target={str(pred_target)!r}."
+        )
+
+    pred_pl = getattr(predictor, "prediction_length", None)
+    if (
+        "prediction_length" in raw
+        and raw["prediction_length"] is not None
+        and pred_pl is not None
+        and int(pred_pl) != pl
+    ):
+        raise InferenceError(
+            f"{meta_path}: field prediction_length={pl} does not match loaded "
+            f"predictor.prediction_length={int(pred_pl)}."
+        )
+
+    known_list = _known_covariates_from_predictor(predictor)
+    reserved = {id_column, timestamp_column, target}
+    overlap = reserved.intersection(known_list)
+    if overlap:
+        raise InferenceError(
+            f"{meta_path}: known covariate names overlap id/timestamp/target columns: {sorted(overlap)}."
+        )
+
     return TimeSeriesInferenceMetadata(
-        target=str(target),
-        id_column=os.environ.get("AUTOGLUON_TS_ID_COLUMN", "item_id"),
-        timestamp_column=os.environ.get("AUTOGLUON_TS_TIMESTAMP_COLUMN", "timestamp"),
+        target=target,
+        id_column=id_column,
+        timestamp_column=timestamp_column,
         prediction_length=pl,
         known_covariates_names=known_list,
     )
@@ -61,6 +163,12 @@ def _load_ts_metadata(predictor: TimeSeriesPredictor) -> TimeSeriesInferenceMeta
 def _dataframe_to_tsdf(
     df: pd.DataFrame, meta: TimeSeriesInferenceMetadata
 ) -> TimeSeriesDataFrame:
+    if df.columns.duplicated().any():
+        dup = df.columns[df.columns.duplicated(keep=False)].unique().tolist()
+        raise InferenceError(
+            f"instances DataFrame has duplicate column names: {dup!r}. "
+            "Use unique keys in each row object."
+        )
     missing = {meta.id_column, meta.timestamp_column, meta.target} - set(df.columns)
     if missing:
         raise InferenceError(
@@ -79,6 +187,11 @@ def _known_covariates_to_tsdf(
     rows: List[Dict[str, Any]], meta: TimeSeriesInferenceMetadata
 ) -> TimeSeriesDataFrame:
     df = pd.DataFrame(rows)
+    if df.columns.duplicated().any():
+        dup = df.columns[df.columns.duplicated(keep=False)].unique().tolist()
+        raise InferenceError(
+            f"known_covariates DataFrame has duplicate column names: {dup!r}."
+        )
     required = {meta.id_column, meta.timestamp_column, *meta.known_covariates_names}
     missing = required - set(df.columns)
     if missing:
@@ -150,7 +263,7 @@ class AutoGluonTimeSeriesModel(Model):
         if not os.path.isdir(local):
             raise ModelMissingError(local)
         self._predictor = TimeSeriesPredictor.load(local)
-        self._metadata = _load_ts_metadata(self._predictor)
+        self._metadata = _load_ts_metadata(self._predictor, local)
         self.ready = True
         return self.ready
 

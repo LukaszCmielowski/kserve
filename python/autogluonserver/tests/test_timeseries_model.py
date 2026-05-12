@@ -12,12 +12,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+
 import pandas as pd
 import pytest
 from kserve.errors import InferenceError
 from kserve.protocol.infer_type import InferRequest, InferInput
 
 from autogluonserver.timeseries_model import AutoGluonTimeSeriesModel
+
+
+def _write_predictor_metadata(
+    tmp_path,
+    *,
+    target: str = "y",
+    id_column: str = "item_id",
+    timestamp_column: str = "ts",
+    prediction_length: int = 1,
+) -> None:
+    payload = {
+        "target": target,
+        "id_column": id_column,
+        "timestamp_column": timestamp_column,
+        "prediction_length": prediction_length,
+    }
+    (tmp_path / "predictor_metadata.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
 
 
 class FakeTimeSeriesPredictor:
@@ -39,7 +61,7 @@ class FakeTimeSeriesPredictor:
 
 
 def test_timeseries_load_and_predict_v1(monkeypatch, tmp_path):
-    monkeypatch.setenv("AUTOGLUON_TS_TIMESTAMP_COLUMN", "ts")
+    _write_predictor_metadata(tmp_path)
     fake = FakeTimeSeriesPredictor()
     monkeypatch.setattr(
         "autogluonserver.timeseries_model.Storage.download", lambda _: str(tmp_path)
@@ -69,7 +91,7 @@ def test_timeseries_load_and_predict_v1(monkeypatch, tmp_path):
 
 
 def test_timeseries_known_covariates_passed(monkeypatch, tmp_path):
-    monkeypatch.setenv("AUTOGLUON_TS_TIMESTAMP_COLUMN", "ts")
+    _write_predictor_metadata(tmp_path)
     fake = FakeTimeSeriesPredictor(known_covariates_names=["promo"])
     monkeypatch.setattr(
         "autogluonserver.timeseries_model.Storage.download", lambda _: str(tmp_path)
@@ -92,7 +114,7 @@ def test_timeseries_known_covariates_passed(monkeypatch, tmp_path):
 
 
 def test_timeseries_missing_known_covariates_raises(monkeypatch, tmp_path):
-    monkeypatch.setenv("AUTOGLUON_TS_TIMESTAMP_COLUMN", "ts")
+    _write_predictor_metadata(tmp_path)
     monkeypatch.setattr(
         "autogluonserver.timeseries_model.Storage.download", lambda _: str(tmp_path)
     )
@@ -107,7 +129,7 @@ def test_timeseries_missing_known_covariates_raises(monkeypatch, tmp_path):
 
 
 def test_timeseries_v2_request_raises(monkeypatch, tmp_path):
-    monkeypatch.setenv("AUTOGLUON_TS_TIMESTAMP_COLUMN", "ts")
+    _write_predictor_metadata(tmp_path)
     monkeypatch.setattr(
         "autogluonserver.timeseries_model.Storage.download", lambda _: str(tmp_path)
     )
