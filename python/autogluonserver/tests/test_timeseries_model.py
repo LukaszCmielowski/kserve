@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import logging
 
 import pandas as pd
 import pytest
@@ -126,6 +127,62 @@ def test_timeseries_missing_known_covariates_raises(monkeypatch, tmp_path):
     model.load()
     with pytest.raises(InferenceError, match="known_covariates"):
         model.predict({"instances": [{"item_id": "i1", "ts": "2024-01-01", "y": 1.0}]})
+
+
+def test_timeseries_without_metadata_json_uses_default_columns(
+    caplog, monkeypatch, tmp_path
+):
+    fake = FakeTimeSeriesPredictor()
+    monkeypatch.setattr(
+        "autogluonserver.timeseries_model.Storage.download", lambda _: str(tmp_path)
+    )
+    monkeypatch.setattr(
+        "autogluonserver.timeseries_model.TimeSeriesPredictor.load",
+        lambda path: fake,
+    )
+    model = AutoGluonTimeSeriesModel("forecast", "s3://bucket/artifact")
+    with caplog.at_level(logging.WARNING, logger="kserve"):
+        assert model.load()
+    assert any(
+        "predictor_metadata.json" in r.message
+        and "default inference column names" in r.message
+        for r in caplog.records
+    )
+    resp = model.predict(
+        {
+            "instances": [
+                {"item_id": "i1", "timestamp": "2024-01-01", "y": 1.0},
+                {"item_id": "i1", "timestamp": "2024-01-02", "y": 2.0},
+            ]
+        }
+    )
+    assert fake.last_data is not None
+    assert "predictions" in resp
+
+
+def test_timeseries_env_overrides_column_names(monkeypatch, tmp_path):
+    _write_predictor_metadata(tmp_path)
+    monkeypatch.setenv("AUTOGLUON_TS_ID_COLUMN", "series_id")
+    monkeypatch.setenv("AUTOGLUON_TS_TIMESTAMP_COLUMN", "time")
+    fake = FakeTimeSeriesPredictor()
+    monkeypatch.setattr(
+        "autogluonserver.timeseries_model.Storage.download", lambda _: str(tmp_path)
+    )
+    monkeypatch.setattr(
+        "autogluonserver.timeseries_model.TimeSeriesPredictor.load",
+        lambda path: fake,
+    )
+    model = AutoGluonTimeSeriesModel("forecast", "s3://bucket/artifact")
+    assert model.load()
+    model.predict(
+        {
+            "instances": [
+                {"series_id": "i1", "time": "2024-01-01", "y": 1.0},
+                {"series_id": "i1", "time": "2024-01-02", "y": 2.0},
+            ]
+        }
+    )
+    assert fake.last_data is not None
 
 
 def test_timeseries_v2_request_raises(monkeypatch, tmp_path):

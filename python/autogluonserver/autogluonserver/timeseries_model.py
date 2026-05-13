@@ -32,6 +32,20 @@ from kserve_storage import Storage
 
 PREDICTOR_METADATA_FILENAME = "predictor_metadata.json"
 
+# When ``predictor_metadata.json`` exists: optional non-empty env overrides for target / id / time.
+# When it is missing: default column names from predictor + ``AUTOGLUON_TS_*`` (see ``_load_ts_metadata``).
+ENV_TS_TARGET = "AUTOGLUON_TS_TARGET"
+ENV_TS_ID_COLUMN = "AUTOGLUON_TS_ID_COLUMN"
+ENV_TS_TIMESTAMP_COLUMN = "AUTOGLUON_TS_TIMESTAMP_COLUMN"
+
+
+def _optional_env_nonempty(name: str) -> Optional[str]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    return s or None
+
 
 @dataclass
 class TimeSeriesInferenceMetadata:
@@ -66,31 +80,57 @@ def _load_ts_metadata(
     predictor: TimeSeriesPredictor, model_dir: str
 ) -> TimeSeriesInferenceMetadata:
     """
-    Resolve id/timestamp/target (and optional prediction_length) from ``predictor_metadata.json``
-    in the predictor save directory — the same file AutoGluon writes next to ``predictor.pkl``.
+    Prefer ``predictor_metadata.json`` in the predictor save directory (next to ``predictor.pkl``).
+
+    If that file is absent, use default column names: ``target`` from ``predictor.target``,
+    then ``AUTOGLUON_TS_TARGET``, then ``"target"``; ``id_column`` / ``timestamp_column`` from
+    ``AUTOGLUON_TS_ID_COLUMN`` / ``AUTOGLUON_TS_TIMESTAMP_COLUMN`` defaulting to ``item_id`` and
+    ``timestamp``; ``prediction_length`` from the loaded predictor. A warning is logged that the
+    metadata file was not found.
+
+    When the JSON file exists, ``AUTOGLUON_TS_TARGET``, ``AUTOGLUON_TS_ID_COLUMN``, and
+    ``AUTOGLUON_TS_TIMESTAMP_COLUMN`` may still override the corresponding JSON fields if set to a
+    non-empty string (after strip).
 
     Request payloads must use these exact column names in ``instances`` / ``known_covariates``.
     Known covariate *names* still come from the loaded predictor (not duplicated in the JSON).
     """
     meta_path = os.path.join(model_dir, PREDICTOR_METADATA_FILENAME)
-    if not os.path.isfile(meta_path):
-        preview: List[str] = []
-        if os.path.isdir(model_dir):
-            try:
-                preview = sorted(os.listdir(model_dir))
-            except OSError as exc:
-                preview = [f"<listdir failed: {exc}>"]
-        if len(preview) > 50:
-            preview = preview[:50] + ["..."]
+    known_list = _known_covariates_from_predictor(predictor)
 
-        detail = (
-            f"AutoGluon TimeSeries inference requires {PREDICTOR_METADATA_FILENAME!r} in the "
-            f"model directory (same folder as predictor.pkl; AutoGluon writes it on fit/save). "
-            f"Missing: {meta_path}. model_dir={model_dir!r}. "
-            f"Top-level directory entries (max 50): {preview!r}."
+    if not os.path.isfile(meta_path):
+        logger.warning(
+            "%r not found at %s (model_dir=%r). Using default inference column names.",
+            PREDICTOR_METADATA_FILENAME,
+            meta_path,
+            model_dir,
         )
-        logger.error(detail)
-        raise ModelMissingError(detail)
+        target_raw = getattr(predictor, "target", None) or os.environ.get(
+            ENV_TS_TARGET, "target"
+        )
+        target = str(target_raw)
+        id_column = str(os.environ.get(ENV_TS_ID_COLUMN, "item_id"))
+        timestamp_column = str(os.environ.get(ENV_TS_TIMESTAMP_COLUMN, "timestamp"))
+        pl = int(getattr(predictor, "prediction_length", 1) or 1)
+        if pl < 1:
+            raise InferenceError(f"prediction_length must be >= 1, got {pl}.")
+
+        reserved = {id_column, timestamp_column, target}
+        overlap = reserved.intersection(known_list)
+        if overlap:
+            raise InferenceError(
+                "known covariate names overlap id/timestamp/target columns: "
+                f"{sorted(overlap)}."
+            )
+
+        return TimeSeriesInferenceMetadata(
+            target=target,
+            id_column=id_column,
+            timestamp_column=timestamp_column,
+            prediction_length=pl,
+            known_covariates_names=known_list,
+        )
+
     try:
         with open(meta_path, encoding="utf-8") as fp:
             raw = json.load(fp)
@@ -104,13 +144,22 @@ def _load_ts_metadata(
             f"{meta_path} must contain a JSON object at the top level, got {type(raw).__name__}."
         )
 
-    target = _nonempty_metadata_str(raw.get("target"), field="target", meta_path=meta_path)
+    target = _nonempty_metadata_str(
+        raw.get("target"), field="target", meta_path=meta_path
+    )
     id_column = _nonempty_metadata_str(
         raw.get("id_column"), field="id_column", meta_path=meta_path
     )
     timestamp_column = _nonempty_metadata_str(
         raw.get("timestamp_column"), field="timestamp_column", meta_path=meta_path
     )
+
+    if (env_target := _optional_env_nonempty(ENV_TS_TARGET)) is not None:
+        target = env_target
+    if (env_id := _optional_env_nonempty(ENV_TS_ID_COLUMN)) is not None:
+        id_column = env_id
+    if (env_ts := _optional_env_nonempty(ENV_TS_TIMESTAMP_COLUMN)) is not None:
+        timestamp_column = env_ts
 
     if "prediction_length" in raw and raw["prediction_length"] is not None:
         try:
@@ -143,7 +192,6 @@ def _load_ts_metadata(
             f"predictor.prediction_length={int(pred_pl)}."
         )
 
-    known_list = _known_covariates_from_predictor(predictor)
     reserved = {id_column, timestamp_column, target}
     overlap = reserved.intersection(known_list)
     if overlap:

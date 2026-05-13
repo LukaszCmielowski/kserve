@@ -43,6 +43,27 @@ def test_load_delegates_to_tabular(monkeypatch, tmp_path):
     assert m._impl._predictor is fake
 
 
+def test_load_delegates_to_timeseries_without_metadata_json(monkeypatch, tmp_path):
+    fake = MagicMock()
+    fake.target = "y"
+    fake.prediction_length = 1
+    fake.known_covariates_names = []
+    monkeypatch.setattr(
+        "autogluonserver.predictor_factory.detect_and_load_predictor",
+        lambda _: ("timeseries", fake),
+    )
+    monkeypatch.setattr(
+        "autogluonserver.predictor_factory.Storage.download", lambda _: str(tmp_path)
+    )
+    m = create_autogluon_model("n", str(tmp_path))
+    assert m.load()
+    assert isinstance(m._impl, AutoGluonTimeSeriesModel)
+    assert m._impl._predictor is fake
+    assert m._impl._metadata.target == "y"
+    assert m._impl._metadata.id_column == "item_id"
+    assert m._impl._metadata.timestamp_column == "timestamp"
+
+
 def test_load_delegates_to_timeseries(monkeypatch, tmp_path):
     fake = MagicMock()
     fake.target = "y"
