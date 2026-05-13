@@ -20,7 +20,10 @@ import pytest
 from kserve.errors import InferenceError
 from kserve.protocol.infer_type import InferRequest, InferInput
 
-from autogluonserver.timeseries_model import AutoGluonTimeSeriesModel
+from autogluonserver.timeseries_model import (
+    AutoGluonTimeSeriesModel,
+    _load_ts_metadata,
+)
 
 
 def _write_predictor_metadata(
@@ -183,6 +186,69 @@ def test_timeseries_env_overrides_column_names(monkeypatch, tmp_path):
         }
     )
     assert fake.last_data is not None
+
+
+def test_load_ts_metadata_invalid_json_raises(tmp_path):
+    meta = tmp_path / "predictor_metadata.json"
+    meta.write_text("{not json", encoding="utf-8")
+    with pytest.raises(InferenceError, match="Invalid JSON"):
+        _load_ts_metadata(FakeTimeSeriesPredictor(), str(tmp_path))
+
+
+def test_load_ts_metadata_top_level_array_raises(tmp_path):
+    meta = tmp_path / "predictor_metadata.json"
+    meta.write_text(json.dumps([]), encoding="utf-8")
+    with pytest.raises(InferenceError, match="JSON object at the top level"):
+        _load_ts_metadata(FakeTimeSeriesPredictor(), str(tmp_path))
+
+
+def test_load_ts_metadata_target_mismatch_raises(tmp_path):
+    _write_predictor_metadata(tmp_path, target="wrong_target")
+    fake = FakeTimeSeriesPredictor()
+    fake.target = "y"
+    with pytest.raises(InferenceError, match="does not match loaded predictor.target"):
+        _load_ts_metadata(fake, str(tmp_path))
+
+
+def test_load_ts_metadata_prediction_length_not_int_raises(tmp_path):
+    _write_predictor_metadata(tmp_path)
+    meta = tmp_path / "predictor_metadata.json"
+    meta.write_text(
+        json.dumps(
+            {
+                "target": "y",
+                "id_column": "item_id",
+                "timestamp_column": "ts",
+                "prediction_length": "nope",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(InferenceError, match="prediction_length must be an integer"):
+        _load_ts_metadata(FakeTimeSeriesPredictor(), str(tmp_path))
+
+
+def test_load_ts_metadata_prediction_length_mismatch_predictor_raises(tmp_path):
+    _write_predictor_metadata(tmp_path, prediction_length=5)
+    fake = FakeTimeSeriesPredictor()
+    fake.prediction_length = 1
+    with pytest.raises(
+        InferenceError, match="does not match loaded predictor.prediction_length"
+    ):
+        _load_ts_metadata(fake, str(tmp_path))
+
+
+def test_load_ts_metadata_known_covariate_name_overlap_raises(tmp_path):
+    _write_predictor_metadata(tmp_path, id_column="item_id", timestamp_column="ts")
+    fake = FakeTimeSeriesPredictor(known_covariates_names=["item_id"])
+    with pytest.raises(InferenceError, match="overlap id/timestamp/target"):
+        _load_ts_metadata(fake, str(tmp_path))
+
+
+def test_load_ts_metadata_without_file_overlap_raises(monkeypatch, tmp_path):
+    fake = FakeTimeSeriesPredictor(known_covariates_names=["item_id"])
+    with pytest.raises(InferenceError, match="overlap id/timestamp/target"):
+        _load_ts_metadata(fake, str(tmp_path))
 
 
 def test_timeseries_v2_request_raises(monkeypatch, tmp_path):

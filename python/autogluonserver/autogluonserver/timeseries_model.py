@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -76,6 +76,180 @@ def _known_covariates_from_predictor(predictor: TimeSeriesPredictor) -> List[str
     return []
 
 
+def _read_predictor_metadata_json(meta_path: str) -> Dict[str, Any]:
+    """Read ``predictor_metadata.json`` and return the top-level JSON object."""
+    try:
+        with open(meta_path, encoding="utf-8") as fp:
+            raw = json.load(fp)
+    except OSError as e:
+        raise InferenceError(f"Cannot read {meta_path}: {e}") from e
+    except json.JSONDecodeError as e:
+        raise InferenceError(f"Invalid JSON in {meta_path}: {e}") from e
+
+    if not isinstance(raw, dict):
+        raise InferenceError(
+            f"{meta_path} must contain a JSON object at the top level, got {type(raw).__name__}."
+        )
+    return raw
+
+
+def _required_ts_columns_from_metadata_dict(
+    raw: Dict[str, Any], meta_path: str
+) -> Tuple[str, str, str]:
+    target = _nonempty_metadata_str(
+        raw.get("target"), field="target", meta_path=meta_path
+    )
+    id_column = _nonempty_metadata_str(
+        raw.get("id_column"), field="id_column", meta_path=meta_path
+    )
+    timestamp_column = _nonempty_metadata_str(
+        raw.get("timestamp_column"), field="timestamp_column", meta_path=meta_path
+    )
+    return target, id_column, timestamp_column
+
+
+def _apply_ts_column_env_overrides(
+    target: str, id_column: str, timestamp_column: str
+) -> Tuple[str, str, str]:
+    """Non-empty ``AUTOGLUON_TS_*`` env values override JSON-derived column names."""
+    if (env_target := _optional_env_nonempty(ENV_TS_TARGET)) is not None:
+        target = env_target
+    if (env_id := _optional_env_nonempty(ENV_TS_ID_COLUMN)) is not None:
+        id_column = env_id
+    if (env_ts := _optional_env_nonempty(ENV_TS_TIMESTAMP_COLUMN)) is not None:
+        timestamp_column = env_ts
+    return target, id_column, timestamp_column
+
+
+def _prediction_length_from_metadata_dict(
+    raw: Dict[str, Any], meta_path: str, predictor: TimeSeriesPredictor
+) -> int:
+    if "prediction_length" in raw and raw["prediction_length"] is not None:
+        try:
+            pl = int(raw["prediction_length"])
+        except (TypeError, ValueError) as e:
+            raise InferenceError(
+                f"{meta_path}: prediction_length must be an integer, got {raw['prediction_length']!r}."
+            ) from e
+    else:
+        pl = int(getattr(predictor, "prediction_length", 1) or 1)
+
+    if pl < 1:
+        raise InferenceError(f"{meta_path}: prediction_length must be >= 1, got {pl}.")
+    return pl
+
+
+def _validate_file_metadata_against_predictor(
+    meta_path: str,
+    raw: Dict[str, Any],
+    predictor: TimeSeriesPredictor,
+    target: str,
+    pl: int,
+) -> None:
+    pred_target = getattr(predictor, "target", None)
+    if pred_target is not None and str(pred_target) != target:
+        raise InferenceError(
+            f"{meta_path}: field target={target!r} does not match loaded predictor.target={str(pred_target)!r}."
+        )
+
+    pred_pl = getattr(predictor, "prediction_length", None)
+    if (
+        "prediction_length" in raw
+        and raw["prediction_length"] is not None
+        and pred_pl is not None
+        and int(pred_pl) != pl
+    ):
+        raise InferenceError(
+            f"{meta_path}: field prediction_length={pl} does not match loaded "
+            f"predictor.prediction_length={int(pred_pl)}."
+        )
+
+
+def _raise_if_known_covariates_overlap_columns(
+    known_list: List[str],
+    target: str,
+    id_column: str,
+    timestamp_column: str,
+    *,
+    meta_path: Optional[str] = None,
+) -> None:
+    reserved = {id_column, timestamp_column, target}
+    overlap = reserved.intersection(known_list)
+    if not overlap:
+        return
+    detail = f"{sorted(overlap)}."
+    if meta_path is not None:
+        raise InferenceError(
+            f"{meta_path}: known covariate names overlap id/timestamp/target columns: {detail}"
+        )
+    raise InferenceError(
+        "known covariate names overlap id/timestamp/target columns: " + detail
+    )
+
+
+def _ts_metadata_without_file(
+    predictor: TimeSeriesPredictor,
+    model_dir: str,
+    meta_path: str,
+    known_list: List[str],
+) -> TimeSeriesInferenceMetadata:
+    """Build inference column metadata when ``predictor_metadata.json`` is absent."""
+    logger.warning(
+        "%r not found at %s (model_dir=%r). Using default inference column names.",
+        PREDICTOR_METADATA_FILENAME,
+        meta_path,
+        model_dir,
+    )
+    target_raw = getattr(predictor, "target", None) or os.environ.get(
+        ENV_TS_TARGET, "target"
+    )
+    target = str(target_raw)
+    id_column = str(os.environ.get(ENV_TS_ID_COLUMN, "item_id"))
+    timestamp_column = str(os.environ.get(ENV_TS_TIMESTAMP_COLUMN, "timestamp"))
+    pl = int(getattr(predictor, "prediction_length", 1) or 1)
+    if pl < 1:
+        raise InferenceError(f"prediction_length must be >= 1, got {pl}.")
+
+    _raise_if_known_covariates_overlap_columns(
+        known_list, target, id_column, timestamp_column
+    )
+
+    return TimeSeriesInferenceMetadata(
+        target=target,
+        id_column=id_column,
+        timestamp_column=timestamp_column,
+        prediction_length=pl,
+        known_covariates_names=known_list,
+    )
+
+
+def _ts_metadata_from_json_file(
+    predictor: TimeSeriesPredictor,
+    meta_path: str,
+    known_list: List[str],
+) -> TimeSeriesInferenceMetadata:
+    """Build inference column metadata from an on-disk ``predictor_metadata.json``."""
+    raw = _read_predictor_metadata_json(meta_path)
+    target, id_column, timestamp_column = _required_ts_columns_from_metadata_dict(
+        raw, meta_path
+    )
+    target, id_column, timestamp_column = _apply_ts_column_env_overrides(
+        target, id_column, timestamp_column
+    )
+    pl = _prediction_length_from_metadata_dict(raw, meta_path, predictor)
+    _validate_file_metadata_against_predictor(meta_path, raw, predictor, target, pl)
+    _raise_if_known_covariates_overlap_columns(
+        known_list, target, id_column, timestamp_column, meta_path=meta_path
+    )
+    return TimeSeriesInferenceMetadata(
+        target=target,
+        id_column=id_column,
+        timestamp_column=timestamp_column,
+        prediction_length=pl,
+        known_covariates_names=known_list,
+    )
+
+
 def _load_ts_metadata(
     predictor: TimeSeriesPredictor, model_dir: str
 ) -> TimeSeriesInferenceMetadata:
@@ -99,124 +273,30 @@ def _load_ts_metadata(
     known_list = _known_covariates_from_predictor(predictor)
 
     if not os.path.isfile(meta_path):
-        logger.warning(
-            "%r not found at %s (model_dir=%r). Using default inference column names.",
-            PREDICTOR_METADATA_FILENAME,
-            meta_path,
-            model_dir,
-        )
-        target_raw = getattr(predictor, "target", None) or os.environ.get(
-            ENV_TS_TARGET, "target"
-        )
-        target = str(target_raw)
-        id_column = str(os.environ.get(ENV_TS_ID_COLUMN, "item_id"))
-        timestamp_column = str(os.environ.get(ENV_TS_TIMESTAMP_COLUMN, "timestamp"))
-        pl = int(getattr(predictor, "prediction_length", 1) or 1)
-        if pl < 1:
-            raise InferenceError(f"prediction_length must be >= 1, got {pl}.")
+        return _ts_metadata_without_file(predictor, model_dir, meta_path, known_list)
 
-        reserved = {id_column, timestamp_column, target}
-        overlap = reserved.intersection(known_list)
-        if overlap:
-            raise InferenceError(
-                "known covariate names overlap id/timestamp/target columns: "
-                f"{sorted(overlap)}."
-            )
+    return _ts_metadata_from_json_file(predictor, meta_path, known_list)
 
-        return TimeSeriesInferenceMetadata(
-            target=target,
-            id_column=id_column,
-            timestamp_column=timestamp_column,
-            prediction_length=pl,
-            known_covariates_names=known_list,
-        )
 
-    try:
-        with open(meta_path, encoding="utf-8") as fp:
-            raw = json.load(fp)
-    except OSError as e:
-        raise InferenceError(f"Cannot read {meta_path}: {e}") from e
-    except json.JSONDecodeError as e:
-        raise InferenceError(f"Invalid JSON in {meta_path}: {e}") from e
-
-    if not isinstance(raw, dict):
-        raise InferenceError(
-            f"{meta_path} must contain a JSON object at the top level, got {type(raw).__name__}."
-        )
-
-    target = _nonempty_metadata_str(
-        raw.get("target"), field="target", meta_path=meta_path
-    )
-    id_column = _nonempty_metadata_str(
-        raw.get("id_column"), field="id_column", meta_path=meta_path
-    )
-    timestamp_column = _nonempty_metadata_str(
-        raw.get("timestamp_column"), field="timestamp_column", meta_path=meta_path
-    )
-
-    if (env_target := _optional_env_nonempty(ENV_TS_TARGET)) is not None:
-        target = env_target
-    if (env_id := _optional_env_nonempty(ENV_TS_ID_COLUMN)) is not None:
-        id_column = env_id
-    if (env_ts := _optional_env_nonempty(ENV_TS_TIMESTAMP_COLUMN)) is not None:
-        timestamp_column = env_ts
-
-    if "prediction_length" in raw and raw["prediction_length"] is not None:
-        try:
-            pl = int(raw["prediction_length"])
-        except (TypeError, ValueError) as e:
-            raise InferenceError(
-                f"{meta_path}: prediction_length must be an integer, got {raw['prediction_length']!r}."
-            ) from e
-    else:
-        pl = int(getattr(predictor, "prediction_length", 1) or 1)
-
-    if pl < 1:
-        raise InferenceError(f"{meta_path}: prediction_length must be >= 1, got {pl}.")
-
-    pred_target = getattr(predictor, "target", None)
-    if pred_target is not None and str(pred_target) != target:
-        raise InferenceError(
-            f"{meta_path}: field target={target!r} does not match loaded predictor.target={str(pred_target)!r}."
-        )
-
-    pred_pl = getattr(predictor, "prediction_length", None)
-    if (
-        "prediction_length" in raw
-        and raw["prediction_length"] is not None
-        and pred_pl is not None
-        and int(pred_pl) != pl
-    ):
-        raise InferenceError(
-            f"{meta_path}: field prediction_length={pl} does not match loaded "
-            f"predictor.prediction_length={int(pred_pl)}."
-        )
-
-    reserved = {id_column, timestamp_column, target}
-    overlap = reserved.intersection(known_list)
-    if overlap:
-        raise InferenceError(
-            f"{meta_path}: known covariate names overlap id/timestamp/target columns: {sorted(overlap)}."
-        )
-
-    return TimeSeriesInferenceMetadata(
-        target=target,
-        id_column=id_column,
-        timestamp_column=timestamp_column,
-        prediction_length=pl,
-        known_covariates_names=known_list,
-    )
+def _check_duplicate_columns(
+    df: pd.DataFrame, context: str, *, detail: Optional[str] = None
+) -> None:
+    if df.columns.duplicated().any():
+        dup = df.columns[df.columns.duplicated(keep=False)].unique().tolist()
+        msg = f"{context} has duplicate column names: {dup!r}."
+        if detail:
+            msg += " " + detail
+        raise InferenceError(msg)
 
 
 def _dataframe_to_tsdf(
     df: pd.DataFrame, meta: TimeSeriesInferenceMetadata
 ) -> TimeSeriesDataFrame:
-    if df.columns.duplicated().any():
-        dup = df.columns[df.columns.duplicated(keep=False)].unique().tolist()
-        raise InferenceError(
-            f"instances DataFrame has duplicate column names: {dup!r}. "
-            "Use unique keys in each row object."
-        )
+    _check_duplicate_columns(
+        df,
+        "instances DataFrame",
+        detail="Use unique keys in each row object.",
+    )
     missing = {meta.id_column, meta.timestamp_column, meta.target} - set(df.columns)
     if missing:
         raise InferenceError(
@@ -235,11 +315,7 @@ def _known_covariates_to_tsdf(
     rows: List[Dict[str, Any]], meta: TimeSeriesInferenceMetadata
 ) -> TimeSeriesDataFrame:
     df = pd.DataFrame(rows)
-    if df.columns.duplicated().any():
-        dup = df.columns[df.columns.duplicated(keep=False)].unique().tolist()
-        raise InferenceError(
-            f"known_covariates DataFrame has duplicate column names: {dup!r}."
-        )
+    _check_duplicate_columns(df, "known_covariates DataFrame")
     required = {meta.id_column, meta.timestamp_column, *meta.known_covariates_names}
     missing = required - set(df.columns)
     if missing:
