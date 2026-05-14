@@ -75,7 +75,6 @@ def test_load_delegates_to_timeseries(monkeypatch, tmp_path):
                 "target": "y",
                 "id_column": "item_id",
                 "timestamp_column": "timestamp",
-                "prediction_length": 1,
             }
         ),
         encoding="utf-8",

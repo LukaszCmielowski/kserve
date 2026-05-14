@@ -32,9 +32,9 @@ from kserve_storage import Storage
 
 PREDICTOR_METADATA_FILENAME = "predictor_metadata.json"
 
-# When ``predictor_metadata.json`` exists: optional non-empty env overrides for target / id / time.
-# When it is missing: default column names from predictor + ``AUTOGLUON_TS_*`` (see ``_load_ts_metadata``).
-ENV_TS_TARGET = "AUTOGLUON_TS_TARGET"
+# Inference ``target`` column name always comes from ``TimeSeriesPredictor.target`` (see
+# ``_target_column_from_predictor``). Optional non-empty env overrides apply only to id / time
+# columns (``AUTOGLUON_TS_*``); see ``_load_ts_metadata``.
 ENV_TS_ID_COLUMN = "AUTOGLUON_TS_ID_COLUMN"
 ENV_TS_TIMESTAMP_COLUMN = "AUTOGLUON_TS_TIMESTAMP_COLUMN"
 
@@ -76,6 +76,27 @@ def _known_covariates_from_predictor(predictor: TimeSeriesPredictor) -> List[str
     return []
 
 
+def _target_column_from_predictor(
+    predictor: TimeSeriesPredictor, *, meta_path: Optional[str] = None
+) -> str:
+    """Resolve the history/target column name strictly from the loaded ``TimeSeriesPredictor``."""
+    raw_target = getattr(predictor, "target", None)
+    if raw_target is None:
+        suffix = f" ({meta_path})" if meta_path else ""
+        raise InferenceError(
+            "TimeSeriesPredictor.target is not set; cannot resolve the inference target column name"
+            f"{suffix}."
+        )
+    s = str(raw_target).strip()
+    if not s:
+        suffix = f" ({meta_path})" if meta_path else ""
+        raise InferenceError(
+            "TimeSeriesPredictor.target is empty; cannot resolve the inference target column name"
+            f"{suffix}."
+        )
+    return s
+
+
 def _read_predictor_metadata_json(meta_path: str) -> Dict[str, Any]:
     """Read ``predictor_metadata.json`` and return the top-level JSON object."""
     try:
@@ -93,76 +114,38 @@ def _read_predictor_metadata_json(meta_path: str) -> Dict[str, Any]:
     return raw
 
 
-def _required_ts_columns_from_metadata_dict(
+def _id_timestamp_columns_from_metadata_dict(
     raw: Dict[str, Any], meta_path: str
-) -> Tuple[str, str, str]:
-    target = _nonempty_metadata_str(
-        raw.get("target"), field="target", meta_path=meta_path
-    )
+) -> Tuple[str, str]:
     id_column = _nonempty_metadata_str(
         raw.get("id_column"), field="id_column", meta_path=meta_path
     )
     timestamp_column = _nonempty_metadata_str(
         raw.get("timestamp_column"), field="timestamp_column", meta_path=meta_path
     )
-    return target, id_column, timestamp_column
+    return id_column, timestamp_column
 
 
-def _apply_ts_column_env_overrides(
-    target: str, id_column: str, timestamp_column: str
-) -> Tuple[str, str, str]:
-    """Non-empty ``AUTOGLUON_TS_*`` env values override JSON-derived column names."""
-    if (env_target := _optional_env_nonempty(ENV_TS_TARGET)) is not None:
-        target = env_target
+def _apply_id_timestamp_env_overrides(
+    id_column: str, timestamp_column: str
+) -> Tuple[str, str]:
+    """Non-empty ``AUTOGLUON_TS_ID_COLUMN`` / ``AUTOGLUON_TS_TIMESTAMP_COLUMN`` override JSON names."""
     if (env_id := _optional_env_nonempty(ENV_TS_ID_COLUMN)) is not None:
         id_column = env_id
     if (env_ts := _optional_env_nonempty(ENV_TS_TIMESTAMP_COLUMN)) is not None:
         timestamp_column = env_ts
-    return target, id_column, timestamp_column
+    return id_column, timestamp_column
 
 
-def _prediction_length_from_metadata_dict(
-    raw: Dict[str, Any], meta_path: str, predictor: TimeSeriesPredictor
+def _prediction_length_from_predictor(
+    predictor: TimeSeriesPredictor, *, meta_path: Optional[str] = None
 ) -> int:
-    if "prediction_length" in raw and raw["prediction_length"] is not None:
-        try:
-            pl = int(raw["prediction_length"])
-        except (TypeError, ValueError) as e:
-            raise InferenceError(
-                f"{meta_path}: prediction_length must be an integer, got {raw['prediction_length']!r}."
-            ) from e
-    else:
-        pl = int(getattr(predictor, "prediction_length", 1) or 1)
-
+    """Horizon steps always follow the loaded ``TimeSeriesPredictor`` (not ``predictor_metadata.json``)."""
+    pl = int(getattr(predictor, "prediction_length", 1) or 1)
     if pl < 1:
-        raise InferenceError(f"{meta_path}: prediction_length must be >= 1, got {pl}.")
+        prefix = f"{meta_path}: " if meta_path else ""
+        raise InferenceError(f"{prefix}prediction_length must be >= 1, got {pl}.")
     return pl
-
-
-def _validate_file_metadata_against_predictor(
-    meta_path: str,
-    raw: Dict[str, Any],
-    predictor: TimeSeriesPredictor,
-    target: str,
-    pl: int,
-) -> None:
-    pred_target = getattr(predictor, "target", None)
-    if pred_target is not None and str(pred_target) != target:
-        raise InferenceError(
-            f"{meta_path}: field target={target!r} does not match loaded predictor.target={str(pred_target)!r}."
-        )
-
-    pred_pl = getattr(predictor, "prediction_length", None)
-    if (
-        "prediction_length" in raw
-        and raw["prediction_length"] is not None
-        and pred_pl is not None
-        and int(pred_pl) != pl
-    ):
-        raise InferenceError(
-            f"{meta_path}: field prediction_length={pl} does not match loaded "
-            f"predictor.prediction_length={int(pred_pl)}."
-        )
 
 
 def _raise_if_known_covariates_overlap_columns(
@@ -200,15 +183,10 @@ def _ts_metadata_without_file(
         meta_path,
         model_dir,
     )
-    target_raw = getattr(predictor, "target", None) or os.environ.get(
-        ENV_TS_TARGET, "target"
-    )
-    target = str(target_raw)
+    target = _target_column_from_predictor(predictor)
     id_column = str(os.environ.get(ENV_TS_ID_COLUMN, "item_id"))
     timestamp_column = str(os.environ.get(ENV_TS_TIMESTAMP_COLUMN, "timestamp"))
-    pl = int(getattr(predictor, "prediction_length", 1) or 1)
-    if pl < 1:
-        raise InferenceError(f"prediction_length must be >= 1, got {pl}.")
+    pl = _prediction_length_from_predictor(predictor)
 
     _raise_if_known_covariates_overlap_columns(
         known_list, target, id_column, timestamp_column
@@ -230,14 +208,14 @@ def _ts_metadata_from_json_file(
 ) -> TimeSeriesInferenceMetadata:
     """Build inference column metadata from an on-disk ``predictor_metadata.json``."""
     raw = _read_predictor_metadata_json(meta_path)
-    target, id_column, timestamp_column = _required_ts_columns_from_metadata_dict(
+    target = _target_column_from_predictor(predictor, meta_path=meta_path)
+    id_column, timestamp_column = _id_timestamp_columns_from_metadata_dict(
         raw, meta_path
     )
-    target, id_column, timestamp_column = _apply_ts_column_env_overrides(
-        target, id_column, timestamp_column
+    id_column, timestamp_column = _apply_id_timestamp_env_overrides(
+        id_column, timestamp_column
     )
-    pl = _prediction_length_from_metadata_dict(raw, meta_path, predictor)
-    _validate_file_metadata_against_predictor(meta_path, raw, predictor, target, pl)
+    pl = _prediction_length_from_predictor(predictor, meta_path=meta_path)
     _raise_if_known_covariates_overlap_columns(
         known_list, target, id_column, timestamp_column, meta_path=meta_path
     )
@@ -256,15 +234,18 @@ def _load_ts_metadata(
     """
     Prefer ``predictor_metadata.json`` in the predictor save directory (next to ``predictor.pkl``).
 
-    If that file is absent, use default column names: ``target`` from ``predictor.target``,
-    then ``AUTOGLUON_TS_TARGET``, then ``"target"``; ``id_column`` / ``timestamp_column`` from
-    ``AUTOGLUON_TS_ID_COLUMN`` / ``AUTOGLUON_TS_TIMESTAMP_COLUMN`` defaulting to ``item_id`` and
-    ``timestamp``; ``prediction_length`` from the loaded predictor. A warning is logged that the
-    metadata file was not found.
+    The inference ``target`` column name is always taken from ``TimeSeriesPredictor.target`` (never
+    from the metadata file or environment).
 
-    When the JSON file exists, ``AUTOGLUON_TS_TARGET``, ``AUTOGLUON_TS_ID_COLUMN``, and
-    ``AUTOGLUON_TS_TIMESTAMP_COLUMN`` may still override the corresponding JSON fields if set to a
-    non-empty string (after strip).
+    If that file is absent, ``id_column`` / ``timestamp_column`` default to ``item_id`` and
+    ``timestamp``, optionally overridden by non-empty ``AUTOGLUON_TS_ID_COLUMN`` /
+    ``AUTOGLUON_TS_TIMESTAMP_COLUMN``; ``prediction_length`` comes from the loaded predictor. A
+    warning is logged that the metadata file was not found.
+
+    When the JSON file exists, it supplies ``id_column`` and ``timestamp_column`` (required string
+    fields); ``AUTOGLUON_TS_ID_COLUMN`` and ``AUTOGLUON_TS_TIMESTAMP_COLUMN`` may still override
+    those if set to a non-empty string (after strip). ``prediction_length`` always comes from the
+    loaded predictor (any value in the JSON file is ignored).
 
     Request payloads must use these exact column names in ``instances`` / ``known_covariates``.
     Known covariate *names* still come from the loaded predictor (not duplicated in the JSON).

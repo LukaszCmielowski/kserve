@@ -32,13 +32,11 @@ def _write_predictor_metadata(
     target: str = "y",
     id_column: str = "item_id",
     timestamp_column: str = "ts",
-    prediction_length: int = 1,
 ) -> None:
     payload = {
         "target": target,
         "id_column": id_column,
         "timestamp_column": timestamp_column,
-        "prediction_length": prediction_length,
     }
     (tmp_path / "predictor_metadata.json").write_text(
         json.dumps(payload),
@@ -202,16 +200,34 @@ def test_load_ts_metadata_top_level_array_raises(tmp_path):
         _load_ts_metadata(FakeTimeSeriesPredictor(), str(tmp_path))
 
 
-def test_load_ts_metadata_target_mismatch_raises(tmp_path):
+def test_load_ts_metadata_json_target_ignored_uses_predictor_target(tmp_path):
+    """``target`` in predictor_metadata.json does not override TimeSeriesPredictor.target."""
     _write_predictor_metadata(tmp_path, target="wrong_target")
     fake = FakeTimeSeriesPredictor()
     fake.target = "y"
-    with pytest.raises(InferenceError, match="does not match loaded predictor.target"):
+    meta = _load_ts_metadata(fake, str(tmp_path))
+    assert meta.target == "y"
+    assert meta.id_column == "item_id"
+    assert meta.timestamp_column == "ts"
+
+
+def test_load_ts_metadata_raises_when_predictor_target_missing(tmp_path):
+    fake = FakeTimeSeriesPredictor()
+    fake.target = None
+    with pytest.raises(InferenceError, match="TimeSeriesPredictor.target is not set"):
         _load_ts_metadata(fake, str(tmp_path))
 
 
-def test_load_ts_metadata_prediction_length_not_int_raises(tmp_path):
-    _write_predictor_metadata(tmp_path)
+def test_load_ts_metadata_raises_when_predictor_target_missing_with_json(tmp_path):
+    _write_predictor_metadata(tmp_path, target="y")
+    fake = FakeTimeSeriesPredictor()
+    fake.target = None
+    with pytest.raises(InferenceError, match="TimeSeriesPredictor.target is not set"):
+        _load_ts_metadata(fake, str(tmp_path))
+
+
+def test_load_ts_metadata_prediction_length_from_predictor_ignores_json(tmp_path):
+    """``prediction_length`` in predictor_metadata.json is ignored; predictor attribute wins."""
     meta = tmp_path / "predictor_metadata.json"
     meta.write_text(
         json.dumps(
@@ -224,18 +240,10 @@ def test_load_ts_metadata_prediction_length_not_int_raises(tmp_path):
         ),
         encoding="utf-8",
     )
-    with pytest.raises(InferenceError, match="prediction_length must be an integer"):
-        _load_ts_metadata(FakeTimeSeriesPredictor(), str(tmp_path))
-
-
-def test_load_ts_metadata_prediction_length_mismatch_predictor_raises(tmp_path):
-    _write_predictor_metadata(tmp_path, prediction_length=5)
     fake = FakeTimeSeriesPredictor()
-    fake.prediction_length = 1
-    with pytest.raises(
-        InferenceError, match="does not match loaded predictor.prediction_length"
-    ):
-        _load_ts_metadata(fake, str(tmp_path))
+    fake.prediction_length = 7
+    loaded = _load_ts_metadata(fake, str(tmp_path))
+    assert loaded.prediction_length == 7
 
 
 def test_load_ts_metadata_known_covariate_name_overlap_raises(tmp_path):
