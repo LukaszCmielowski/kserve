@@ -76,23 +76,17 @@ def _known_covariates_from_predictor(predictor: TimeSeriesPredictor) -> List[str
     return []
 
 
-def _target_column_from_predictor(
-    predictor: TimeSeriesPredictor, *, meta_path: Optional[str] = None
-) -> str:
+def _target_column_from_predictor(predictor: TimeSeriesPredictor) -> str:
     """Resolve the history/target column name strictly from the loaded ``TimeSeriesPredictor``."""
     raw_target = getattr(predictor, "target", None)
     if raw_target is None:
-        suffix = f" ({meta_path})" if meta_path else ""
         raise InferenceError(
-            "TimeSeriesPredictor.target is not set; cannot resolve the inference target column name"
-            f"{suffix}."
+            "TimeSeriesPredictor.target is not set; cannot resolve the inference target column name."
         )
     s = str(raw_target).strip()
     if not s:
-        suffix = f" ({meta_path})" if meta_path else ""
         raise InferenceError(
-            "TimeSeriesPredictor.target is empty; cannot resolve the inference target column name"
-            f"{suffix}."
+            "TimeSeriesPredictor.target is empty; cannot resolve the inference target column name."
         )
     return s
 
@@ -137,14 +131,11 @@ def _apply_id_timestamp_env_overrides(
     return id_column, timestamp_column
 
 
-def _prediction_length_from_predictor(
-    predictor: TimeSeriesPredictor, *, meta_path: Optional[str] = None
-) -> int:
+def _prediction_length_from_predictor(predictor: TimeSeriesPredictor) -> int:
     """Horizon steps always follow the loaded ``TimeSeriesPredictor`` (not ``predictor_metadata.json``)."""
     pl = int(getattr(predictor, "prediction_length", 1) or 1)
     if pl < 1:
-        prefix = f"{meta_path}: " if meta_path else ""
-        raise InferenceError(f"{prefix}prediction_length must be >= 1, got {pl}.")
+        raise InferenceError(f"prediction_length must be >= 1, got {pl}.")
     return pl
 
 
@@ -208,14 +199,14 @@ def _ts_metadata_from_json_file(
 ) -> TimeSeriesInferenceMetadata:
     """Build inference column metadata from an on-disk ``predictor_metadata.json``."""
     raw = _read_predictor_metadata_json(meta_path)
-    target = _target_column_from_predictor(predictor, meta_path=meta_path)
+    target = _target_column_from_predictor(predictor)
     id_column, timestamp_column = _id_timestamp_columns_from_metadata_dict(
         raw, meta_path
     )
     id_column, timestamp_column = _apply_id_timestamp_env_overrides(
         id_column, timestamp_column
     )
-    pl = _prediction_length_from_predictor(predictor, meta_path=meta_path)
+    pl = _prediction_length_from_predictor(predictor)
     _raise_if_known_covariates_overlap_columns(
         known_list, target, id_column, timestamp_column, meta_path=meta_path
     )
