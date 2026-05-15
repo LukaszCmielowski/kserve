@@ -58,14 +58,10 @@ class TimeSeriesInferenceMetadata:
 
 def _nonempty_metadata_str(value: Any, *, field: str, meta_path: str) -> str:
     if value is None:
-        raise InferenceError(
-            f"{PREDICTOR_METADATA_FILENAME!r} ({meta_path}) is missing required string field {field!r}."
-        )
+        raise InferenceError(f"{meta_path} is missing required string field {field!r}.")
     s = str(value).strip()
     if not s:
-        raise InferenceError(
-            f"{PREDICTOR_METADATA_FILENAME!r} ({meta_path}) has empty string field {field!r}."
-        )
+        raise InferenceError(f"{meta_path} has empty string field {field!r}.")
     return s
 
 
@@ -132,7 +128,15 @@ def _apply_id_timestamp_env_overrides(
 
 def _prediction_length_from_predictor(predictor: TimeSeriesPredictor) -> int:
     """Horizon steps always follow the loaded ``TimeSeriesPredictor`` (not ``predictor_metadata.json``)."""
-    pl = int(getattr(predictor, "prediction_length", 1) or 1)
+    raw = getattr(predictor, "prediction_length", 1)
+    if raw is None:
+        raw = 1
+    try:
+        pl = int(raw)
+    except (TypeError, ValueError) as e:
+        raise InferenceError(
+            f"TimeSeriesPredictor.prediction_length must be an integer >= 1, got {raw!r}."
+        ) from e
     if pl < 1:
         raise InferenceError(f"prediction_length must be >= 1, got {pl}.")
     return pl
@@ -144,34 +148,27 @@ def _raise_if_known_covariates_overlap_columns(
     id_column: str,
     timestamp_column: str,
     *,
-    meta_path: Optional[str] = None,
+    message_prefix: str,
 ) -> None:
     reserved = {id_column, timestamp_column, target}
-    overlap = reserved.intersection(known_list)
+    overlap = sorted(reserved.intersection(known_list))
     if not overlap:
         return
-    detail = f"{sorted(overlap)}."
-    if meta_path is not None:
-        raise InferenceError(
-            f"{meta_path}: known covariate names overlap id/timestamp/target columns: {detail}"
-        )
     raise InferenceError(
-        "known covariate names overlap id/timestamp/target columns: " + detail
+        f"{message_prefix} overlap id/timestamp/target columns: {overlap}."
     )
 
 
 def _ts_metadata_without_file(
     predictor: TimeSeriesPredictor,
-    model_dir: str,
     meta_path: str,
     known_list: List[str],
 ) -> TimeSeriesInferenceMetadata:
     """Build inference column metadata when ``predictor_metadata.json`` is absent."""
     logger.warning(
-        "%r not found at %s (model_dir=%r). Using default inference column names.",
+        "%r not found at %s. Using default inference column names.",
         PREDICTOR_METADATA_FILENAME,
         meta_path,
-        model_dir,
     )
     target = _target_column_from_predictor(predictor)
     id_column, timestamp_column = _apply_id_timestamp_env_overrides(
@@ -180,7 +177,11 @@ def _ts_metadata_without_file(
     pl = _prediction_length_from_predictor(predictor)
 
     _raise_if_known_covariates_overlap_columns(
-        known_list, target, id_column, timestamp_column
+        known_list,
+        target,
+        id_column,
+        timestamp_column,
+        message_prefix="known covariate names",
     )
 
     return TimeSeriesInferenceMetadata(
@@ -208,7 +209,11 @@ def _ts_metadata_from_json_file(
     )
     pl = _prediction_length_from_predictor(predictor)
     _raise_if_known_covariates_overlap_columns(
-        known_list, target, id_column, timestamp_column, meta_path=meta_path
+        known_list,
+        target,
+        id_column,
+        timestamp_column,
+        message_prefix=f"{meta_path}: known covariate names",
     )
     return TimeSeriesInferenceMetadata(
         target=target,
@@ -245,7 +250,7 @@ def _load_ts_metadata(
     known_list = _known_covariates_from_predictor(predictor)
 
     if not os.path.isfile(meta_path):
-        return _ts_metadata_without_file(predictor, model_dir, meta_path, known_list)
+        return _ts_metadata_without_file(predictor, meta_path, known_list)
 
     return _ts_metadata_from_json_file(predictor, meta_path, known_list)
 

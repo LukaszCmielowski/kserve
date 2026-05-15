@@ -261,6 +261,14 @@ def test_load_ts_metadata_raises_when_predictor_target_missing_with_json(tmp_pat
         _load_ts_metadata(fake, str(tmp_path))
 
 
+@pytest.mark.parametrize("prediction_length", [0, -3])
+def test_load_ts_metadata_prediction_length_invalid_raises(tmp_path, prediction_length):
+    fake = FakeTimeSeriesPredictor()
+    fake.prediction_length = prediction_length
+    with pytest.raises(InferenceError, match="prediction_length must be >= 1"):
+        _load_ts_metadata(fake, str(tmp_path))
+
+
 def test_load_ts_metadata_prediction_length_from_predictor_ignores_json(tmp_path):
     """``prediction_length`` in predictor_metadata.json is ignored; predictor attribute wins."""
     meta = tmp_path / "predictor_metadata.json"
@@ -279,6 +287,16 @@ def test_load_ts_metadata_prediction_length_from_predictor_ignores_json(tmp_path
     fake.prediction_length = 7
     loaded = _load_ts_metadata(fake, str(tmp_path))
     assert loaded.prediction_length == 7
+
+
+def test_load_ts_metadata_missing_id_column_error_uses_meta_path_only(tmp_path):
+    meta = tmp_path / "predictor_metadata.json"
+    meta.write_text(json.dumps({"timestamp_column": "ts"}), encoding="utf-8")
+    with pytest.raises(
+        InferenceError,
+        match=rf"{meta} is missing required string field 'id_column'",
+    ):
+        _load_ts_metadata(FakeTimeSeriesPredictor(), str(tmp_path))
 
 
 def test_load_ts_metadata_known_covariate_name_overlap_raises(tmp_path):
