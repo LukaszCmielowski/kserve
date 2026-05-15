@@ -53,7 +53,7 @@ class AutoGluonDetectedModel(Model):
         if kind == "timeseries":
             impl = AutoGluonTimeSeriesModel(self.name, self.model_dir)
             impl._predictor = _predictor
-            impl._metadata = _load_ts_metadata(_predictor)
+            impl._metadata = _load_ts_metadata(_predictor, local)
             impl.ready = True
         else:
             impl = AutoGluonTabularModel(self.name, self.model_dir)
