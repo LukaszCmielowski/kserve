@@ -22,6 +22,9 @@ from kserve.protocol.infer_type import InferRequest, InferInput
 
 from autogluonserver.timeseries_model import (
     AutoGluonTimeSeriesModel,
+    TimeSeriesInferenceMetadata,
+    _forecast_columns_rename_map,
+    _forecast_to_records,
     _load_ts_metadata,
 )
 
@@ -240,7 +243,7 @@ def test_timeseries_env_overrides_column_names(monkeypatch, tmp_path):
     )
     model = AutoGluonTimeSeriesModel("forecast", "s3://bucket/artifact")
     assert model.load()
-    model.predict(
+    resp = model.predict(
         {
             "instances": [
                 {"series_id": "i1", "time": "2024-01-01", "y": 1.0},
@@ -249,6 +252,48 @@ def test_timeseries_env_overrides_column_names(monkeypatch, tmp_path):
         }
     )
     assert fake.last_data is not None
+    row = resp["predictions"][0]
+    assert row["series_id"] == "i1"
+    assert row["time"] == "2024-01-05T00:00:00"
+    assert "item_id" not in row
+    assert "timestamp" not in row
+
+
+def test_forecast_columns_rename_map_non_multiindex_uses_ag_defaults():
+    meta = TimeSeriesInferenceMetadata(
+        target="y",
+        id_column="series_id",
+        timestamp_column="time",
+        prediction_length=1,
+        known_covariates_names=[],
+    )
+    forecasts = pd.DataFrame({"mean": [3.14]})
+    assert _forecast_columns_rename_map(forecasts, meta) == {
+        "item_id": "series_id",
+        "timestamp": "time",
+    }
+
+
+def test_forecast_to_records_renames_flat_dataframe_columns():
+    meta = TimeSeriesInferenceMetadata(
+        target="y",
+        id_column="series_id",
+        timestamp_column="time",
+        prediction_length=1,
+        known_covariates_names=[],
+    )
+    forecasts = pd.DataFrame(
+        {
+            "item_id": ["i1"],
+            "timestamp": [pd.Timestamp("2024-01-05")],
+            "mean": [3.14],
+        }
+    )
+    row = _forecast_to_records(forecasts, meta)[0]
+    assert row["series_id"] == "i1"
+    assert row["time"] == "2024-01-05T00:00:00"
+    assert "item_id" not in row
+    assert "timestamp" not in row
 
 
 def test_load_ts_metadata_invalid_json_raises(tmp_path):
