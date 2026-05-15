@@ -33,7 +33,7 @@ def detect_and_load_predictor(
     """
     errors: List[str] = []
     try:
-        ts = TimeSeriesPredictor.load(predictor_dir, require_version_match=False)
+        ts = TimeSeriesPredictor.load(predictor_dir)
         if isinstance(ts, TimeSeriesPredictor):
             return "timeseries", ts
         errors.append(
