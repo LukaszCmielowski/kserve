@@ -123,12 +123,11 @@ def _id_timestamp_columns_from_metadata_dict(
 def _apply_id_timestamp_env_overrides(
     id_column: str, timestamp_column: str
 ) -> Tuple[str, str]:
-    """Non-empty ``AUTOGLUON_TS_ID_COLUMN`` / ``AUTOGLUON_TS_TIMESTAMP_COLUMN`` override JSON names."""
-    if (env_id := _optional_env_nonempty(ENV_TS_ID_COLUMN)) is not None:
-        id_column = env_id
-    if (env_ts := _optional_env_nonempty(ENV_TS_TIMESTAMP_COLUMN)) is not None:
-        timestamp_column = env_ts
-    return id_column, timestamp_column
+    """Non-empty ``AUTOGLUON_TS_*`` env vars (after strip) override the given id/timestamp names."""
+    return (
+        _optional_env_nonempty(ENV_TS_ID_COLUMN) or id_column,
+        _optional_env_nonempty(ENV_TS_TIMESTAMP_COLUMN) or timestamp_column,
+    )
 
 
 def _prediction_length_from_predictor(predictor: TimeSeriesPredictor) -> int:
@@ -175,8 +174,9 @@ def _ts_metadata_without_file(
         model_dir,
     )
     target = _target_column_from_predictor(predictor)
-    id_column = str(os.environ.get(ENV_TS_ID_COLUMN, "item_id"))
-    timestamp_column = str(os.environ.get(ENV_TS_TIMESTAMP_COLUMN, "timestamp"))
+    id_column, timestamp_column = _apply_id_timestamp_env_overrides(
+        "item_id", "timestamp"
+    )
     pl = _prediction_length_from_predictor(predictor)
 
     _raise_if_known_covariates_overlap_columns(

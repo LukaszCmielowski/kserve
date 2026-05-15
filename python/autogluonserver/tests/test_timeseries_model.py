@@ -161,6 +161,41 @@ def test_timeseries_without_metadata_json_uses_default_columns(
     assert "predictions" in resp
 
 
+@pytest.mark.parametrize(
+    "env_id,env_ts",
+    [
+        ("", ""),
+        ("   ", "  "),
+    ],
+    ids=["empty", "whitespace"],
+)
+def test_load_ts_metadata_empty_env_uses_fallbacks(
+    monkeypatch, tmp_path, env_id, env_ts
+):
+    """Empty or whitespace-only env vars do not override defaults or JSON column names."""
+    monkeypatch.setenv("AUTOGLUON_TS_ID_COLUMN", env_id)
+    monkeypatch.setenv("AUTOGLUON_TS_TIMESTAMP_COLUMN", env_ts)
+
+    without_file = _load_ts_metadata(FakeTimeSeriesPredictor(), str(tmp_path))
+    assert without_file.id_column == "item_id"
+    assert without_file.timestamp_column == "timestamp"
+
+    _write_predictor_metadata(
+        tmp_path, id_column="custom_id", timestamp_column="custom_ts"
+    )
+    with_file = _load_ts_metadata(FakeTimeSeriesPredictor(), str(tmp_path))
+    assert with_file.id_column == "custom_id"
+    assert with_file.timestamp_column == "custom_ts"
+
+
+def test_load_ts_metadata_without_file_env_strips_whitespace(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOGLUON_TS_ID_COLUMN", "  series_id  ")
+    monkeypatch.setenv("AUTOGLUON_TS_TIMESTAMP_COLUMN", "  time  ")
+    meta = _load_ts_metadata(FakeTimeSeriesPredictor(), str(tmp_path))
+    assert meta.id_column == "series_id"
+    assert meta.timestamp_column == "time"
+
+
 def test_timeseries_env_overrides_column_names(monkeypatch, tmp_path):
     _write_predictor_metadata(tmp_path)
     monkeypatch.setenv("AUTOGLUON_TS_ID_COLUMN", "series_id")
