@@ -325,8 +325,29 @@ def _payload_instances_to_dataframe(payload: Dict) -> pd.DataFrame:
     return pd.DataFrame(raw)
 
 
-def _forecast_to_records(forecasts: pd.DataFrame) -> List[Dict[str, Any]]:
+def _forecast_columns_rename_map(
+    forecasts: pd.DataFrame, meta: TimeSeriesInferenceMetadata
+) -> Dict[str, str]:
+    """Map AutoGluon forecast index level names to inference ``meta`` id/timestamp columns."""
+    if isinstance(forecasts.index, pd.MultiIndex) and forecasts.index.nlevels >= 2:
+        ag_id, ag_ts = forecasts.index.names[0], forecasts.index.names[1]
+    else:
+        ag_id, ag_ts = "item_id", "timestamp"
+    rename: Dict[str, str] = {}
+    if ag_id and ag_id != meta.id_column:
+        rename[str(ag_id)] = meta.id_column
+    if ag_ts and ag_ts != meta.timestamp_column:
+        rename[str(ag_ts)] = meta.timestamp_column
+    return rename
+
+
+def _forecast_to_records(
+    forecasts: pd.DataFrame, meta: TimeSeriesInferenceMetadata
+) -> List[Dict[str, Any]]:
+    rename = _forecast_columns_rename_map(forecasts, meta)
     work = forecasts.reset_index().copy()
+    if rename:
+        work = work.rename(columns=rename)
     for col in work.columns:
         if pd.api.types.is_datetime64_any_dtype(work[col]):
             work[col] = work[col].dt.strftime("%Y-%m-%dT%H:%M:%S")
@@ -409,7 +430,7 @@ class AutoGluonTimeSeriesModel(Model):
             forecasts = self._predictor.predict(
                 ts_data, known_covariates=kc_tsdf, use_cache=False
             )
-            records = _forecast_to_records(forecasts)
+            records = _forecast_to_records(forecasts, meta)
             return get_predict_response(payload, records, self.name)
         except InferenceError:
             raise

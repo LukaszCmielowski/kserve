@@ -88,8 +88,38 @@ def test_timeseries_load_and_predict_v1(monkeypatch, tmp_path):
     assert len(resp["predictions"]) == 1
     row = resp["predictions"][0]
     assert row["item_id"] == "i1"
+    assert row["ts"] == "2024-01-05T00:00:00"
+    assert "timestamp" not in row
     assert row["mean"] == pytest.approx(3.14)
     assert row["0.1"] == pytest.approx(2.0)
+
+
+def test_timeseries_response_uses_metadata_column_names(monkeypatch, tmp_path):
+    _write_predictor_metadata(tmp_path, id_column="idddd", timestamp_column="czas")
+    fake = FakeTimeSeriesPredictor()
+    monkeypatch.setattr(
+        "autogluonserver.timeseries_model.Storage.download", lambda _: str(tmp_path)
+    )
+    monkeypatch.setattr(
+        "autogluonserver.timeseries_model.TimeSeriesPredictor.load",
+        lambda path: fake,
+    )
+    model = AutoGluonTimeSeriesModel("forecast", "s3://bucket/artifact")
+    assert model.load()
+    resp = model.predict(
+        {
+            "instances": [
+                {"idddd": "D1737", "czas": "2024-01-01", "y": 1.0},
+                {"idddd": "D1737", "czas": "2024-01-02", "y": 2.0},
+            ]
+        }
+    )
+    row = resp["predictions"][0]
+    assert row["idddd"] == "i1"
+    assert row["czas"] == "2024-01-05T00:00:00"
+    assert "item_id" not in row
+    assert "timestamp" not in row
+    assert row["mean"] == pytest.approx(3.14)
 
 
 def test_timeseries_known_covariates_passed(monkeypatch, tmp_path):
