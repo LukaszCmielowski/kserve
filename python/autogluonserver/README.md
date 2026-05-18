@@ -40,11 +40,11 @@ Enable it by setting the environment variable `PREDICT_PROBA=true` on the predic
 
 Models must be saved with `TimeSeriesPredictor.save()` (a directory). Point `storageUri` at that **predictor directory** (the same path you would pass to `TimeSeriesPredictor.load`).
 
-Column names for request JSON are taken from the loaded `TimeSeriesPredictor` where available. You can override id, timestamp, and target column names with environment variables (see below) if they are not sufficient.
+Column names for request JSON come from the loaded `TimeSeriesPredictor` and optional `predictor_metadata.json`. The **target** column name is always `TimeSeriesPredictor.target` (not overridable by environment). You can override **id** and **timestamp** column names with environment variables (see [Environment](#environment)).
 
 ### Time series JSON request (`:predict`)
 
-**History** — top-level `instances`: array of JSON objects, one object per time step (long format), each including `target` and any covariates present in training history.
+**History** — top-level `instances`: array of JSON objects, one object per time step (long format), each including the target column (name = `TimeSeriesPredictor.target`) and any covariates present in training history.
 
 **Known covariates on the horizon** (only if the model was trained with known covariates): top-level `known_covariates`, same column names as training for those features, plus the configured id and timestamp columns, covering the forecast horizon steps per series.
 
@@ -122,7 +122,8 @@ spec:
 ## Environment
 
 - **`PREDICT_PROBA`** (tabular): set to `"true"` to return [class probabilities](#classification-probabilities-predict_proba) via `predict_proba()` instead of predicted labels via `predict()`.
-- **`AUTOGLUON_TS_ID_COLUMN`**, **`AUTOGLUON_TS_TIMESTAMP_COLUMN`**, **`AUTOGLUON_TS_TARGET`**: override series id, timestamp, and target column names for time series JSON (defaults: `item_id`, `timestamp`, and predictor `target` or `target`).
+- **`AUTOGLUON_TS_ID_COLUMN`**, **`AUTOGLUON_TS_TIMESTAMP_COLUMN`** (time series): override id and timestamp column names in JSON requests. Defaults are `item_id` and `timestamp` when `predictor_metadata.json` is absent, or the values from that file when present. Non-empty values override after stripping whitespace.
+- **Target column** (time series): always taken from `TimeSeriesPredictor.target` on the loaded model. There is no environment variable to override it; use the same column name in `instances` / `known_covariates` as at training time.
 
 ## Development
 
