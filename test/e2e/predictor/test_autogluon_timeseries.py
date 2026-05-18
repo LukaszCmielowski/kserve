@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""E2E tests for AutoGluon TimeSeriesPredictor on kserve-autogluonserver.
+"""
+E2E tests for AutoGluon TimeSeriesPredictor on kserve-autogluonserver.
 
 The InferenceService ``storage_uri`` must refer to an AutoGluon TimeSeries
 predictor save directory (the path you would pass to ``TimeSeriesPredictor.load``).
@@ -21,27 +22,17 @@ By default, tests use a sample model artifact in a **public** GCS bucket. Overri
 ``AUTOGLUON_TIMESERIES_STORAGE_URI`` if you need a different ``storage_uri``.
 """
 
-import logging
 import os
 
 import pytest
-from kubernetes import client
 from kubernetes.client import V1ResourceRequirements
 
 from kserve import (
-    KServeClient,
-    V1beta1InferenceService,
-    V1beta1InferenceServiceSpec,
     V1beta1ModelFormat,
     V1beta1ModelSpec,
     V1beta1PredictorSpec,
-    constants,
 )
-from ..common.utils import (
-    AUTOGLUON_ISVC_WAIT_TIMEOUT,
-    KSERVE_TEST_NAMESPACE,
-    predict_isvc,
-)
+from .autogluon_helpers import deploy_and_predict
 
 # Public sample TimeSeriesPredictor artifact for e2e (override via env if needed).
 _AUTOGLUON_TS_DEFAULT_STORAGE_URI = (
@@ -58,17 +49,6 @@ AUTOGLUON_TS_RESOURCES = V1ResourceRequirements(
 )
 
 
-def _create_isvc(service_name: str, predictor: V1beta1PredictorSpec):
-    return V1beta1InferenceService(
-        api_version=constants.KSERVE_V1BETA1,
-        kind=constants.KSERVE_KIND_INFERENCESERVICE,
-        metadata=client.V1ObjectMeta(
-            name=service_name, namespace=KSERVE_TEST_NAMESPACE
-        ),
-        spec=V1beta1InferenceServiceSpec(predictor=predictor),
-    )
-
-
 def _create_ts_predictor(service_name: str, storage_uri: str = None):
     model = V1beta1ModelSpec(
         model_format=V1beta1ModelFormat(name="autogluon"),
@@ -82,30 +62,8 @@ def _create_ts_predictor(service_name: str, storage_uri: str = None):
 async def _deploy_and_predict_v1(
     service_name: str, rest_v1_client, input_path: str, storage_uri: str = None
 ):
-    kserve_client = KServeClient(
-        config_file=os.environ.get("KUBECONFIG", "~/.kube/config")
-    )
     predictor = _create_ts_predictor(service_name, storage_uri=storage_uri)
-    isvc = _create_isvc(service_name, predictor)
-    kserve_client.create(isvc)
-    try:
-        try:
-            kserve_client.wait_isvc_ready(
-                service_name,
-                namespace=KSERVE_TEST_NAMESPACE,
-                timeout_seconds=AUTOGLUON_ISVC_WAIT_TIMEOUT,
-            )
-        except RuntimeError as e:
-            pods = kserve_client.core_api.list_namespaced_pod(
-                KSERVE_TEST_NAMESPACE,
-                label_selector=f"serving.kserve.io/inferenceservice={service_name}",
-            )
-            for pod in pods.items:
-                logging.info(pod)
-            raise e
-        return await predict_isvc(rest_v1_client, service_name, input_path)
-    finally:
-        kserve_client.delete(service_name, KSERVE_TEST_NAMESPACE)
+    return await deploy_and_predict(service_name, predictor, rest_v1_client, input_path)
 
 
 @pytest.mark.predictor
