@@ -20,6 +20,8 @@ from autogluon.tabular import TabularPredictor
 from autogluon.timeseries import TimeSeriesPredictor
 from kserve.errors import InferenceError
 
+from autogluonserver.version_compat import load_predictor_tolerating_patch_mismatch
+
 
 def detect_and_load_predictor(
     predictor_dir: str,
@@ -33,7 +35,9 @@ def detect_and_load_predictor(
     """
     errors: List[str] = []
     try:
-        ts = TimeSeriesPredictor.load(predictor_dir)
+        ts = load_predictor_tolerating_patch_mismatch(
+            TimeSeriesPredictor, predictor_dir
+        )
         if isinstance(ts, TimeSeriesPredictor):
             return "timeseries", ts
         errors.append(
@@ -42,7 +46,7 @@ def detect_and_load_predictor(
     except Exception as e:
         errors.append(f"timeseries: {e}")
     try:
-        tb = TabularPredictor.load(predictor_dir)
+        tb = load_predictor_tolerating_patch_mismatch(TabularPredictor, predictor_dir)
         if isinstance(tb, TabularPredictor):
             return "tabular", tb
         errors.append(f"tabular: loaded object is not TabularPredictor: {type(tb)!r}")

@@ -22,6 +22,7 @@ from autogluon.tabular import TabularPredictor
 
 from kserve import Model
 from kserve.errors import InferenceError, ModelMissingError
+from autogluonserver.version_compat import load_predictor_tolerating_patch_mismatch
 from kserve.protocol.infer_type import InferOutput, InferRequest, InferResponse
 from kserve.utils.utils import generate_uuid, get_predict_input, get_predict_response
 from kserve_storage import Storage
@@ -394,7 +395,9 @@ class AutoGluonTabularModel(Model):
         model_path = Storage.download(self.model_dir)
         if not os.path.isdir(model_path):
             raise ModelMissingError(model_path)
-        self._predictor = TabularPredictor.load(model_path)
+        self._predictor = load_predictor_tolerating_patch_mismatch(
+            TabularPredictor, model_path
+        )
         self._prediction_datatype = _determine_prediction_datatype(self._predictor)
         self.ready = True
         return self.ready
