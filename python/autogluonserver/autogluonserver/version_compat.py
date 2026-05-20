@@ -35,7 +35,7 @@ def load_predictor_tolerating_patch_mismatch(predictor_cls: Type[_T], path: str)
     predictor directory.  This function reads that file and compares it against
     the installed package version *before* calling ``load()``:
 
-    * Same major and minor, different patch or local label (e.g. ``+rhaiv.2``):
+    * Same major and minor, different patch or local label (e.g. ``+rhaiv.1``):
       load proceeds with ``require_version_match=False``.
     * Major or minor differs: raises ``InferenceError`` immediately.
     * Version file absent or unreadable: delegates to ``load()`` unchanged so
